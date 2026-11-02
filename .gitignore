@@ -1,0 +1,25 @@
+# 权重 / 缓存（不要提交）
+models/
+.hf_cache/
+*.safetensors
+*.gguf
+*.pth
+*.ckpt
+*.npz
+
+# 两个引擎的 venv
+.venv*/
+venv*/
+
+# 运行时产物
+__pycache__/
+*.pyc
+.thumbs/
+logs/
+out/
+*.log
+.DS_Store
+_*
+
+# 超分权重
+web/models/

@@ -1,0 +1,33 @@
+MOSS-Image Workbench
+====================
+
+本仓库的代码以 Apache License 2.0 发布（见 LICENSE）。
+仓库不包含任何模型权重；权重按各自许可证下载使用。
+
+第三方组件与数据
+----------------
+1. MOSS-Image（模型与官方实现）
+   OpenMOSS / OpenMOSS-Team, Apache-2.0
+   https://github.com/OpenMOSS/MOSS-Image
+
+2. mflux（Apple Silicon 上的 MLX 实现，本仓库的 Denoise 引擎底座）
+   Filip Strand, MIT
+   https://github.com/filipstrand/mflux
+
+3. moss-image-mlx（纯 MLX 独立实现，Turbo/第二引擎）
+   Apache-2.0
+   https://github.com/felix-ab/moss-image-mlx
+
+4. Thera（MLX 神经热场超分，代码在 web/thera/，随附 Apache-2.0 LICENSE）
+   Apache-2.0
+
+5. 量化权重（VisualInference/MOSS-Image-SFT-MLX-compact、-8bit）
+   由 moss-image-mlx 项目量化发布，Apache-2.0
+
+6. Turbo student 与 destripe 适配器
+   VisualInference/MOSS-Image-SFT-Turbo-MLX、nynxz/MOSS-Image，Apache-2.0
+
+7. 超分权重（可选，不随仓库分发）
+   Nomos2 / Remacri / RealESRGAN / MewZoom / SeedVR2 / HAT，各自原始许可证
+
+代码中的中文注释与数值结论来自本机 M1 / 16GB 实测，复现口径见 docs/BENCHMARKS.md。

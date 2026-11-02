@@ -1,0 +1,2 @@
+# 可选：提示词强化（mlx_lm 加载一份 mflux 格式的 Qwen3.5-9B 4bit 权重）
+mlx-lm==0.32.2

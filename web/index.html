@@ -1,0 +1,1032 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOSS-Image 工作台</title>
+<style>
+:root{
+  --bg:#0b0d10; --panel:#12151a; --panel2:#171b21; --line:#232932;
+  --fg:#e8eaee; --dim:#98a0ab; --faint:#6b7480;
+  --acc:#6d8dff; --acc2:#8b7bff; --ok:#42d392; --warn:#e8b45a; --err:#f0625d;
+  --rad:14px;
+}
+/* ── 暖黄绿日间模式 ── */
+body.light{
+  --bg:#f0eedd; --panel:#faf9ef; --panel2:#e9e7d6; --line:#d5d2ba;
+  --fg:#33362a; --dim:#5b6050; --faint:#6e7365;
+  --acc:#4867d6; --acc2:#6f5fd0; --ok:#2f9e6a; --warn:#b07c1e; --err:#cc4440;
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{margin:0;background:
+  radial-gradient(1200px 500px at 80% -10%, rgba(109,141,255,.07), transparent 60%),
+  radial-gradient(900px 400px at -10% 110%, rgba(139,123,255,.05), transparent 60%),
+  var(--bg);
+  color:var(--fg);
+  font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+  min-height:100vh}
+body.light{background:
+  radial-gradient(1200px 500px at 80% -10%, rgba(72,103,214,.06), transparent 60%),
+  radial-gradient(900px 400px at -10%, rgba(140,160,60,.08), transparent 55%),
+  var(--bg)}
+.app{display:grid;grid-template-columns:480px 1fr;gap:16px;max-width:1720px;margin:0 auto;padding:16px}
+@media(max-width:1024px){.app{grid-template-columns:1fr}}
+
+/* ───── 顶栏 ───── */
+.top{grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:10px}
+.brand h1{font-size:16px;margin:0;font-weight:700;letter-spacing:.2px}
+.brand .v{font-size:11px;color:var(--faint)}
+.meters{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+.meter{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:4px 12px;font-size:11.5px;display:flex;align-items:center;gap:7px;color:var(--dim)}
+.meter b{color:var(--fg);font-variant-numeric:tabular-nums;font-weight:600;font-size:12px}
+.meter.hot b{color:var(--warn)}
+.meter.bad b{color:var(--err)}
+.theme-btn{background:var(--panel);border:1px solid var(--line);border-radius:99px;
+  padding:5px 13px;font-size:12px;color:var(--dim);cursor:pointer;transition:all .15s}
+.theme-btn:hover{color:var(--fg);border-color:var(--acc)}
+
+/* ───── 卡片 ───── */
+.card{background:linear-gradient(180deg,rgba(255,255,255,.015),transparent 40%),var(--panel);
+  border:1px solid var(--line);border-radius:var(--rad);padding:14px;margin-bottom:12px}
+body.light .card{background:linear-gradient(180deg,rgba(255,255,255,.7),rgba(255,255,255,0) 30%),var(--panel)}
+.card h3{margin:0 0 10px;font-size:12.5px;font-weight:600;color:var(--dim)}
+textarea,input,select{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--fg);
+  border-radius:10px;padding:9px 11px;font:inherit;outline:none;transition:border-color .15s}
+textarea{resize:vertical;line-height:1.6}
+textarea:focus,input:focus,select:focus{border-color:var(--acc)}
+textarea::placeholder,input::placeholder{color:var(--faint)}
+/* 提示词框：原来 240px，写 Layout JSON 时看两三行就要滚，很憋。
+   拉到 36vh（1080p 上约 390px），卡片总高与右侧画布基本齐平。
+   resize:vertical 还在，需要更大可以自己拖。 */
+textarea#prompt{min-height:clamp(280px,36vh,460px);max-height:70vh;font-size:13.5px;line-height:1.7}
+.lbl{display:block;font-size:11px;color:var(--dim);margin:0 0 4px}
+
+/* ───── 速度档（紧凑 2×2，描述外移） ───── */
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.mode{position:relative;background:var(--panel2);border:1.5px solid var(--line);border-radius:11px;
+  padding:8px 10px;cursor:pointer;transition:all .15s}
+.mode:hover{border-color:#39424f}
+.mode.on{border-color:var(--acc);background:linear-gradient(180deg,rgba(109,141,255,.12),rgba(109,141,255,.04))}
+body.light .mode.on{background:linear-gradient(180deg,rgba(72,103,214,.10),rgba(72,103,214,.03))}
+.mode.dis{opacity:.38;cursor:not-allowed}
+.mode .t{font-size:12.5px;font-weight:600}
+.mode .e{font-size:10.5px;color:var(--dim);margin-top:1px;font-variant-numeric:tabular-nums}
+.mode .pin{position:absolute;top:7px;right:8px;font-size:9px;color:var(--acc);
+  border:1px solid;border-radius:99px;padding:0 5px;letter-spacing:.05em}
+.mode .lora-tag{display:inline-block;margin-left:5px;padding:0 4px;border-radius:4px;
+  font-size:9px;font-weight:700;letter-spacing:.02em;color:#0b1220;background:#7dd3a8;vertical-align:1px}
+.mode-desc{font-size:11px;color:var(--faint);margin-top:8px;line-height:1.5;min-height:17px}
+
+/* ───── 引擎（紧凑行） ───── */
+.engs{display:flex;gap:7px}
+.eng{flex:1;background:var(--panel2);border:1.5px solid var(--line);border-radius:11px;
+  padding:7px 11px;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:7px}
+.eng:hover{border-color:#39424f}
+.eng.on{border-color:var(--acc2);background:linear-gradient(180deg,rgba(139,123,255,.12),rgba(139,123,255,.04))}
+body.light .eng.on{background:linear-gradient(180deg,rgba(111,95,208,.10),rgba(111,95,208,.03))}
+.eng.dis{opacity:.62;cursor:not-allowed}
+.eng .dot{width:7px;height:7px;border-radius:99px;background:var(--ok);flex:none}
+.eng.dis .dot{background:var(--err)}
+.eng .t{font-size:12.5px;font-weight:600}
+.eng-note{font-size:11px;color:var(--faint);margin-top:8px;line-height:1.5}
+
+/* ───── 参数行 ───── */
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
+.fld{flex:1;min-width:0}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.ghost-btn{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:8px;
+  padding:4px 10px;font-size:11.5px;cursor:pointer}
+.ghost-btn:hover{color:var(--fg);border-color:#39424f}
+
+/* ───── 生成 ───── */
+.go{width:100%;border:0;border-radius:12px;padding:12px;font-size:15px;font-weight:700;cursor:pointer;
+  color:#fff;background:linear-gradient(135deg,var(--acc),var(--acc2));
+  box-shadow:0 4px 20px rgba(109,141,255,.25);transition:all .2s;letter-spacing:.02em}
+body.light .go{box-shadow:0 4px 16px rgba(72,103,214,.28)}
+.go:hover{filter:brightness(1.08)}
+.go:disabled{opacity:.45;cursor:default;box-shadow:none}
+.prog{margin-top:12px}
+.pbar{height:7px;background:var(--panel2);border-radius:99px;overflow:hidden}
+.pbar>i{display:block;height:100%;width:0;border-radius:99px;
+  background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .4s ease}
+.pline{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-top:6px;
+  font-variant-numeric:tabular-nums}
+.pline b{color:var(--fg);font-weight:600}
+.errbox{color:var(--err);font-size:12px;white-space:pre-wrap;margin-top:10px;
+  background:rgba(240,98,93,.07);border:1px solid rgba(240,98,93,.25);border-radius:10px;padding:10px;
+  max-height:140px;overflow:auto}
+body.light .errbox{background:rgba(204,68,64,.06);border-color:rgba(204,68,64,.35)}
+
+/* ───── 高级 ───── */
+details.adv{margin-top:10px;border-top:1px dashed var(--line);padding-top:9px}
+details.adv summary{cursor:pointer;font-size:11.5px;color:var(--dim);list-style:none;user-select:none}
+details.adv summary::-webkit-details-marker{display:none}
+details.adv summary::before{content:"▸ ";color:var(--faint)}
+details.adv[open] summary::before{content:"▾ "}
+.chk{display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;user-select:none;padding:3px 0}
+.chk input{width:auto;margin:0;accent-color:var(--acc)}
+.hint{font-size:11px;color:var(--faint);margin-top:7px;line-height:1.5}
+
+/* ───── 右侧：画布 ───── */
+/* 右栏：sticky 跟随视口。
+   原来只写 height:calc(100vh - 92px)，而左栏内容比一屏长，grid 行被左栏撑到
+   1200px+，右栏却只有 626px 高 → 顶部对齐、底部空一大块，看着"两栏不齐"。
+   改成 sticky 后，左栏往下滚，右栏始终贴住视口，视觉上就是齐的。 */
+.right{display:flex;flex-direction:column;gap:14px;min-width:0;
+  position:sticky;top:16px;align-self:start;
+  height:calc(100vh - 32px);overflow:hidden}
+.stage{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:var(--rad);
+  overflow:hidden;display:flex;flex-direction:column;flex:1 1 58%;min-height:220px}
+.stage-head{display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line)}
+.stage-head .tt{font-size:13px;font-weight:600}
+.stage-head .sub{font-size:11.5px;color:var(--dim);font-variant-numeric:tabular-nums}
+.stage-body{flex:1;min-height:0;overflow:hidden;display:flex;align-items:center;justify-content:center;
+  background:
+    linear-gradient(45deg,rgba(255,255,255,.012) 25%,transparent 25%,transparent 75%,rgba(255,255,255,.012) 75%),
+    linear-gradient(45deg,rgba(255,255,255,.012) 25%,transparent 25%,transparent 75%,rgba(255,255,255,.012) 75%);
+  background-size:24px 24px;background-position:0 0,12px 12px;padding:16px;position:relative}
+body.light .stage-body{background:
+    linear-gradient(45deg,rgba(0,0,0,.028) 25%,transparent 25%,transparent 75%,rgba(0,0,0,.028) 75%),
+    linear-gradient(45deg,rgba(0,0,0,.028) 25%,transparent 25%,transparent 75%,rgba(0,0,0,.028) 75%);
+  background-size:24px 24px;background-position:0 0,12px 12px}
+.stage-body img.main{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;
+  box-shadow:0 10px 40px rgba(0,0,0,.5);display:block}
+body.light .stage-body img.main{box-shadow:0 10px 34px rgba(60,64,40,.28)}
+.stage-body .empty{color:var(--faint);font-size:13px;text-align:center;line-height:2}
+.stage-body .empty .big{font-size:34px;display:block;margin-bottom:6px;opacity:.5}
+.spin{width:34px;height:34px;border:3px solid var(--panel2);border-top-color:var(--acc);
+  border-radius:50%;animation:sp 1s linear infinite;margin:0 auto 12px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.stage-act{display:flex;gap:8px;padding:9px 16px;border-top:1px solid var(--line)}
+.stage-act button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:9px;
+  padding:5px 12px;font-size:12px;cursor:pointer}
+.stage-act button:hover{color:var(--fg);border-color:#39424f}
+
+/* ───── 历史（网格） ───── */
+.hist-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--rad);padding:13px 15px;
+  /* 原来写死 min(30vh,290px)，只有三行高，跟左边参数栏完全不成比例。
+     现在按视口给到 42vh（夹在 300–560px），能舒服看 4–6 行。 */
+  flex:0 1 42%;min-height:200px;max-height:52vh;display:flex;flex-direction:column}
+.hist-head{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.hist-head h3{margin:0;font-size:12.5px;font-weight:600;color:var(--dim)}
+.hist-head .n{font-size:11px;color:var(--dim)}
+.hist-head button{margin-left:auto}
+.szpick{display:flex;gap:0;margin-left:8px;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.szpick button{background:var(--panel2);border:0;color:var(--faint);font:inherit;font-size:11px;
+  padding:3px 10px;cursor:pointer;transition:all .15s}
+.szpick button + button{border-left:1px solid var(--line)}
+.szpick button:hover{color:var(--fg)}
+.szpick button.on{background:var(--acc);color:#fff}
+.hist-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--thumb,148px),1fr));gap:9px;
+  flex:1;min-height:0;overflow-y:auto;padding-right:2px;align-content:start;
+  grid-auto-rows:max-content}
+.hist-grid::-webkit-scrollbar{width:8px}
+.hist-grid::-webkit-scrollbar-thumb{background:var(--line);border-radius:99px}
+.hitem{position:relative;cursor:pointer;border-radius:10px;overflow:hidden;
+  border:1px solid transparent;background:transparent;
+  height:calc(var(--thumb,148px) * .72 + 22px)}
+.hitem img{width:100%;height:calc(var(--thumb,148px) * .72);object-fit:contain;display:block;
+  background:#0d1014}
+body.light .hitem img{background:#e7e5d4}
+.hitem .cap{padding:4px 7px;font-size:10px;color:var(--dim);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;background:transparent}
+.hitem:hover{border-color:var(--acc);background:var(--panel2)}
+.hitem .del{position:absolute;top:5px;right:5px;width:20px;height:20px;border-radius:6px;border:0;
+  background:rgba(0,0,0,.55);color:#fff;font-size:11px;line-height:1;cursor:pointer;opacity:0;
+  display:flex;align-items:center;justify-content:center}
+.hitem:hover .del{opacity:1}
+.hitem .del:hover{background:var(--err)}
+.hitem .up{position:absolute;top:5px;left:5px;width:20px;height:20px;border-radius:6px;border:0;
+  background:rgba(0,0,0,.55);color:#fff;font-size:11px;line-height:1;cursor:pointer;opacity:0;
+  display:flex;align-items:center;justify-content:center}
+.hitem:hover .up{opacity:1}
+.hitem .up:hover{background:var(--acc)}
+.hitem .badge{position:absolute;top:5px;right:29px;padding:1px 5px;border-radius:5px;font-size:9.5px;
+  background:rgba(0,0,0,.6);color:#ffd166;border:1px solid rgba(255,209,102,.35);letter-spacing:.3px}
+
+/* ───── lightbox ───── */
+.lb{position:fixed;inset:0;background:rgba(5,7,10,.9);backdrop-filter:blur(8px);z-index:50;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px}
+.lb img{max-width:92vw;max-height:80vh;border-radius:10px;box-shadow:0 20px 80px rgba(0,0,0,.6)}
+.lb .meta{margin-top:14px;font-size:12px;color:var(--dim);text-align:center;max-width:80vw}
+.lb .meta b{color:var(--fg)}
+.lb .x{position:absolute;top:18px;right:22px;font-size:26px;color:var(--dim);cursor:pointer;
+  background:none;border:0}
+.lb .x:hover{color:#fff}
+.lb .act{display:flex;gap:9px;align-items:center;margin-top:13px}
+.lb .act select{width:auto;min-width:210px;padding:7px 10px;font-size:12px;border-radius:9px}
+.lb .act .ghost-btn{padding:8px 15px;font-size:12.5px}
+.lb .act .ghost-btn:disabled{opacity:.55;cursor:default}
+/* ───── 工作流预设 ───── */
+.presets{display:flex;flex-wrap:wrap;gap:6px}
+.preset{display:inline-flex;align-items:center;gap:2px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:99px;padding:3px 4px 3px 11px;font-size:12px;transition:all .15s;max-width:100%}
+.preset:hover{border-color:var(--acc)}
+.preset>span:first-child{cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
+.preset .x{opacity:.4;font-size:12px;line-height:1;padding:1px 5px;cursor:pointer}
+.preset .x:hover{opacity:1;color:var(--err)}
+.hint-inline{font-weight:400;color:var(--faint);font-size:11px}
+/* ───── 断连横幅（后端没了/重启中时顶在页面上）───── */
+.netbanner{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:9999;
+  background:var(--panel);border:1px solid var(--err);border-radius:12px;padding:10px 16px;
+  font-size:13px;color:var(--fg);box-shadow:0 10px 34px rgba(0,0,0,.5);
+  display:flex;align-items:center;gap:10px;max-width:92vw}
+.netbanner .dot2{width:8px;height:8px;border-radius:50%;background:var(--err);flex:none;
+  animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.2}}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="netbanner hidden" id="netBanner"><span class="dot2"></span><span id="netBannerText">工作台服务已断开，正在自动恢复…</span></div>
+<div class="app">
+
+  <div class="top">
+    <div class="brand"><h1>MOSS-Image 工作台</h1><span class="v">Apple Silicon · 本地</span></div>
+    <button class="theme-btn" id="reloadBtn" title="刷新页面（改了前端后用这个，等同 ⌘R）">⟳ 刷新</button>
+    <button class="theme-btn" id="themeBtn" title="切换 日间 / 深色">☀️ 日间</button>
+    <div class="meters">
+      <div class="meter" id="mSwapW"><span>Swap</span><b id="mSwap">—</b></div>
+      <div class="meter"><span>可用内存</span><b id="mFree">—</b></div>
+      <div class="meter"><span>磁盘</span><b id="mDisk">—</b></div>
+      <div class="meter"><span>进程 RSS</span><b id="mRss">—</b></div>
+      <div class="meter hidden" id="mQueueW"><span>队列</span><b id="mQueue">0</b></div>
+    </div>
+  </div>
+
+  <!-- ══ 左栏：参数（紧凑单列） ══ -->
+  <div>
+    <div class="card">
+      <h3>画面描述</h3>
+      <textarea id="prompt" placeholder="主体、动作、光线、材质、镜头、氛围……&#10;支持中文 / 英文 / JSON layout。写得越具体越好。"></textarea>
+      <label class="chk" style="margin-top:8px"><input id="enhance" type="checkbox">
+        <span><b>提示词强化</b>（本地 Qwen3.5-9B）· Caption 与 Layout JSON 都能增强，结构/坐标锁死，失败自动回退原文
+          <span style="display:block;color:var(--faint);font-size:11px;margin-top:2px">手动精调时常关；大约 +10~25s（Caption）/ +60~90s（Layout）</span></span></label>
+    </div>
+
+    <div class="card">
+      <h3>速度档</h3>
+      <div class="modes" id="modes"></div>
+      <div class="mode-desc" id="modeDesc"></div>
+      <div class="row" style="margin-top:10px">
+        <div class="fld" style="flex:0 0 78px"><label class="lbl">步数</label>
+          <input id="stepsIn" type="number" min="1" max="120" step="1" value="8"></div>
+        <div class="fld" style="flex:0 0 84px"><label class="lbl">CFG</label>
+          <input id="cfgIn" type="number" min="0" max="10" step="0.1" value="1.0"></div>
+        <div class="fld" style="flex:1;align-self:flex-end;padding-bottom:5px">
+          <span id="stepsHint" style="font-size:11px;line-height:1.35;color:var(--faint)"></span></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div class="fld" style="flex:0 0 92px"><label class="lbl">LoRA 强度</label>
+          <input id="loraScale" type="number" step="0.05" min="0" max="2" value="0.7"></div>
+        <div class="fld" style="flex:1;align-self:flex-end;padding-bottom:2px">
+          <label class="chk" style="margin-bottom:2px"><input id="loraOn" type="checkbox" checked>
+            <span id="loraState">LoRA 已启用</span></label>
+          <span id="loraHint" style="display:block;font-size:11px;line-height:1.35;color:var(--faint)"></span></div>
+      </div>
+      <div class="row" style="margin-top:8px" id="charLoraRow">
+        <div class="fld" style="flex:1"><label class="lbl">角色 LoRA（可选，叠加）</label>
+          <select id="charLora"><option value="">不叠加</option></select></div>
+        <div class="fld" style="flex:0 0 96px"><label class="lbl">叠加强度</label>
+          <input id="charLoraScale" type="number" step="0.05" min="0" max="2" value="1.0"></div>
+      </div>
+      <span id="charLoraHint" style="display:block;font-size:11px;line-height:1.35;color:var(--faint);margin-top:6px"></span>
+    </div>
+
+    <div class="card">
+      <h3>引擎</h3>
+      <div class="engs" id="engs"></div>
+      <div class="eng-note" id="engNote"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div class="fld" style="flex:0 0 76px"><label class="lbl">宽</label><input id="w" type="number" step="16" value="640"></div>
+        <div class="fld" style="flex:0 0 76px"><label class="lbl">高</label><input id="h" type="number" step="16" value="480"></div>
+        <div class="fld"><label class="lbl">种子</label>
+          <div style="display:flex;gap:6px">
+            <input id="seed" type="text" value="random">
+            <button class="ghost-btn" id="seedBtn" title="随机 / 锁定切换">🎲</button>
+          </div>
+        </div>
+      </div>
+      <div class="chips" id="whChips"></div>
+
+      <details class="adv">
+        <summary>高级：负面词 / 内存策略</summary>
+        <div style="margin-top:9px">
+          <label class="lbl">负面提示词（20/50 步档与 Turbo 生效；4/8 步蒸馏档 CFG=1.0，无负分支，写了不参与计算）</label>
+          <textarea id="negative" rows="2" style="font-size:12px"></textarea>
+          <label class="lbl" id="skipLbl" style="margin-top:9px">跳步加速（仅 ≥10 步的档位生效；4/8 步蒸馏档不跳）</label>
+          <select id="skipSel" style="width:100%;font-size:12px;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:transparent;color:inherit">
+            <option value="auto">自动 · 25/50 步走自适应，20 步关闭（推荐）</option>
+            <option value="adaptive">自适应 · 强制开启（与「自动」等价，仅 20 步档有区别）</option>
+            <option value="0">关闭 · 全步真实计算</option>
+            <option value="0.2">均匀 · 每 5 步跳 1（约 1.16×，质量差，仅对照用）</option>
+            <option value="0.25">均匀 · 每 4 步跳 1（约 1.2×，质量差，仅对照用）</option>
+            <option value="0.33">均匀 · 每 3 步跳 1（约 1.37×，质量差，仅对照用）</option>
+          </select>
+          <label class="chk" style="margin-top:6px"><input id="twoStage" type="checkbox" checked disabled>
+            <span>两阶段生成（固定启用 · 编码与去噪分进程，swap 写入 7.8G→1.0G）
+              <span style="display:block;color:var(--faint);font-size:11px;margin-top:2px">
+                关掉会变单进程：文本编码器 5.6G + DiT 5.1G 同时驻留 ≈13G，16G 机器必爆 swap</span></span></label>
+          <label class="chk" style="margin-top:6px"><input id="streamMode" type="checkbox" checked>
+            <span>流式加载 DiT（按层 mmap · 常驻 5.5G→0.5G，单步约 +1.7%）
+              <span style="display:block;color:var(--faint);font-size:11px;margin-top:2px">
+                输出与普通模式逐像素一致；开大分辨率（1024²+）时这 5G 就是能不能跑的分界线</span></span></label>
+
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h3>预设 <span class="hint-inline" id="presetEmpty">存常用组合，一键回填</span></h3>
+      <div class="presets" id="presets"></div>
+      <div id="presetForm" class="hidden" style="display:flex;gap:6px;margin-top:8px">
+        <input id="presetName" placeholder="给这套参数起个名字" style="flex:1">
+        <button class="ghost-btn" id="presetOk">保存</button>
+        <button class="ghost-btn" id="presetCancel">取消</button>
+      </div>
+      <button class="ghost-btn" id="presetSave" style="width:100%;margin-top:8px">＋ 存为预设</button>
+    </div>
+
+    <div class="card">
+      <button class="go" id="gen">✦ 生成</button>
+      <div class="prog hidden" id="prog">
+        <div class="pbar"><i id="pbar"></i></div>
+        <div class="pline"><span id="pPhase">排队中</span><span id="pEta"></span></div>
+      </div>
+      <div class="errbox hidden" id="errBox"></div>
+      <div class="hint">⌘ / Ctrl + Enter 快捷生成 · 任务串行排队</div>
+    </div>
+  </div>
+
+  <!-- ══ 右栏：画布 + 历史网格 ══ -->
+  <div class="right">
+    <div class="stage">
+      <div class="stage-head">
+        <span class="tt" id="stTitle">尚未生成</span>
+        <span class="sub" id="stSub"></span>
+      </div>
+      <div class="stage-body" id="stBody">
+        <div class="empty"><span class="big">◎</span>生成的图片会出现在这里<br>左边写好描述，选个速度档，点「生成」</div>
+      </div>
+      <div class="stage-act hidden" id="stAct">
+        <button id="btnFull">查看原图</button>
+        <button id="btnReuseSeed">复用这张的种子</button>
+      </div>
+    </div>
+
+    <div class="hist-card">
+      <div class="hist-head">
+        <h3>历史</h3><span class="n" id="histCount"></span>
+        <div class="szpick" id="thumbSz">
+          <button data-sz="104" title="小图，一屏看更多">小</button>
+          <button data-sz="148" class="on" title="中图">中</button>
+          <button data-sz="208" title="大图，看清细节">大</button>
+        </div>
+        <button class="ghost-btn" id="histRefresh">刷新</button>
+      </div>
+      <div class="hist-grid" id="histGrid"></div>
+    </div>
+  </div>
+</div>
+
+<div class="lb hidden" id="lb">
+  <button class="x" id="lbX">✕</button>
+  <img id="lbImg" alt="">
+  <div class="meta" id="lbMeta"></div>
+<div class="act">
+  <select id="upModel" title="超分模型"></select>
+  <button class="ghost-btn hidden" id="lbReuse" title="把这张图的生成参数回填到左栏">↺ 复用参数</button>
+  <button class="ghost-btn" id="upBtn" title="按所选模型放大 4 倍（ESRGAN / HAT / MewZoom / SeedVR2）">✦ 超分 ×4</button>
+</div>
+</div>
+
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+let META=null, JOB=null, POLL=null, LASTFILE=null, LASTSEED=null, LBF=null, LAST_MODE=null;
+const state={engine:'mlx8', mode:'akk4'};
+/* 档位是否带 LoRA 由后端 /api/meta 的 lora 字段决定（新增 akhaliq 档后不再写死 id） */
+function curMode(){ return ((META&&META.lora_modes)||[]).find(x=>x.id===state.mode)||{}; }
+function modeHasLora(){ return !!curMode().lora; }
+function modeLoraScale(){ const s=curMode().lora_scale; return (s!=null?s:0.7); }
+
+/* ───── 初始化 ───── */
+function initMeta(){
+  return fetch('/api/meta').then(r=>r.json()).then(d=>{
+    META=d;
+    const m=$('modes'); m.innerHTML='';
+    d.lora_modes.forEach(x=>{
+      const el=document.createElement('div');
+      el.className='mode'; el.dataset.id=x.id; el.title=x.desc;
+      const isLora=x.lora!==false;
+      el.innerHTML=`<div class="t">${x.label}${isLora?'<span class="lora-tag">LoRA</span>':''}</div><div class="e">⏱ ${x.eta640}</div>`;
+      el.onclick=()=>{state.mode=x.id; syncModes();};
+      m.appendChild(el);
+    });
+    const e=$('engs'); e.innerHTML='';
+    d.engines.forEach(x=>{
+      const el=document.createElement('div');
+      el.className='eng'+(x.available?'':' dis'); el.dataset.id=x.id; el.dataset.avail=x.available;
+      el.innerHTML=`<span class="dot"></span><span class="t">${x.label}</span>`;
+      el.title=x.note;
+      el.onclick=()=>{
+        if(!x.available){ showErr(x.note); return; }
+        state.engine=x.id; syncModes();
+      };
+      e.appendChild(el);
+    });
+    /* 超分模型：按档位分组（optgroup），权重缺失的置灰 */
+    const um=$('upModel'); um.innerHTML='';
+    const pend={};
+    (d.upscale_models||[]).forEach(x=>{ const g=x.group||'其它'; (pend[g]=pend[g]||[]).push(x); });
+    const mkOpt=(x)=>{
+      const o=document.createElement('option');
+      o.value=x.id; o.title=x.note;
+      o.textContent=x.label+' · '+x.note+(x.ok===false?'（权重缺失）':'');
+      if(x.ok===false) o.disabled=true;
+      return o;
+    };
+    (d.upscale_groups||[]).concat(Object.keys(pend)).forEach(g=>{
+      if(!pend[g]) return;
+      const og=document.createElement('optgroup'); og.label=g;
+      pend[g].forEach(x=>og.appendChild(mkOpt(x)));
+      um.appendChild(og); delete pend[g];
+    });
+    Object.keys(pend).forEach(g=>{
+      const og=document.createElement('optgroup'); og.label=g;
+      pend[g].forEach(x=>og.appendChild(mkOpt(x)));
+      um.appendChild(og);
+    });
+    if(d.default_upscale) um.value=d.default_upscale;
+    /* 角色 LoRA 下拉：models/loras/ 里有什么就列什么，默认"不叠加" */
+    const cl=$('charLora');
+    if(cl){
+      (d.char_loras||[]).forEach(x=>{
+        const o=document.createElement('option');
+        o.value=x.id; o.textContent=x.label+' · '+x.size_mb+'MB';
+        cl.appendChild(o);
+      });
+    }
+    state.engine=d.default_engine; state.mode=d.default_lora;
+    $('negative').value=d.official_neg;
+    const wh=$('whChips');
+    /* turbo 的 9 种训练比例（felix-ab 训练集，~1MP），前九个按优先级排；
+       512² / 640×480 保留作快速档——比例命中但像素量只有训练值 1/3.5，属未测区间 */
+    [['1024×1024',1024,1024,'1:1 · turbo 训练比例'],
+     ['1184×896',1184,896,'4:3 · turbo 训练比例（默认推荐）'],
+     ['896×1184',896,1184,'3:4 · turbo 训练比例'],
+     ['1248×832',1248,832,'3:2 · turbo 训练比例'],
+     ['832×1248',832,1248,'2:3 · turbo 训练比例'],
+     ['1120×896',1120,896,'5:4 · turbo 训练比例'],
+     ['896×1120',896,1120,'4:5 · turbo 训练比例'],
+     ['1360×768',1360,768,'16:9 · turbo 训练比例'],
+     ['768×1360',768,1360,'9:16 · turbo 训练比例'],
+     ['512²',512,512,'1:1 快速档（像素量低于 turbo 训练区间）'],
+     ['640×480',640,480,'4:3 快速档（像素量低于 turbo 训练区间）']]
+    .forEach(([t,w,h,tip])=>{
+      const b=document.createElement('button'); b.className='ghost-btn'; b.textContent=t;
+      b.title=tip||'';
+      b.onclick=()=>{$('w').value=w;$('h').value=h;};
+      wh.appendChild(b);
+    });
+    syncModes();
+  });
+}
+
+/* 引擎 × 档位 联动 */
+function syncModes(){
+  /* 自愈：state.mode 若指向已撤下的档位（如旧的 native12），回默认档，
+     否则 find() 全是 undefined、界面不报错但每次生成都被后端 400 */
+  if(!(META.lora_modes||[]).some(x=>x.id===state.mode)){
+    state.mode = META.default_lora || (META.lora_modes[0]||{}).id;
+  }
+  /* 档位可以绑定引擎（turbo 只存在于 moss-image-mlx）：先把引擎对齐，再画高亮 */
+  const cm0=META.lora_modes.find(x=>x.id===state.mode);
+  if(cm0 && cm0.engine && state.engine!==cm0.engine){
+    const be=META.engines.find(x=>x.id===cm0.engine);
+    if(be && be.available) state.engine=cm0.engine;
+  }
+  document.querySelectorAll('.mode').forEach(el=>{
+    const id=el.dataset.id;
+    const md=META.lora_modes.find(x=>x.id===id);
+    /* 绑定引擎的档位，在引擎不可用时置灰 */
+    const be=md&&md.engine?META.engines.find(x=>x.id===md.engine):null;
+    const dis = !!(be && !be.available);
+    el.classList.toggle('dis',dis);
+    el.classList.toggle('on', state.mode===id);
+    el.querySelector('.pin')?.remove();
+    if(!dis && id===META.default_lora){
+      const p=document.createElement('span'); p.className='pin'; p.textContent='推荐';
+      el.appendChild(p);
+    }
+  });
+  const m=META.lora_modes.find(x=>x.id===state.mode);
+  $('modeDesc').textContent=m?m.desc:'';
+  document.querySelectorAll('.eng').forEach(el=>el.classList.toggle('on',el.dataset.id===state.engine));
+  const eng=META.engines.find(x=>x.id===state.engine);
+  $('engNote').textContent = eng?eng.note:'';
+  /* LoRA 开关：只有蒸馏档（4/8 步）才加载 LoRA 三件套；原生档显式关掉并置灰，
+     避免"强度框还显示 0.7"让人以为 LoRA 在生效 */
+  const hasLora = modeHasLora();
+  const lo=$('loraOn'), ls=$('loraScale');
+  if(lo){
+    const cm=curMode();
+    lo.checked = hasLora;
+    ls.disabled = !hasLora;
+    /* 只在"档位真的换了"时重置，否则用户手调的强度会被任意一次 syncModes 静默冲回 */
+    if(hasLora && ls.dataset.mode !== state.mode){ ls.value = modeLoraScale(); }
+    ls.dataset.mode = state.mode;
+    $('loraState').textContent = hasLora ? 'LoRA 已启用' : 'LoRA 已关闭';
+    $('loraHint').textContent = hasLora
+      ? ((cm.label||'')+' · 强度 '+Number(modeLoraScale()).toFixed(2).replace(/0+$/,'').replace(/\.$/,''))
+      : '当前档位走原生采样，不加载 LoRA';
+  }
+  /* 角色 LoRA：turbo 档不叠加（调度来自 student 适配器），其余档位都支持 */
+  const clr=$('charLoraRow'), clSel=$('charLora');
+  if(clr && clSel){
+    const turboNow=!!(m && m.turbo);
+    clSel.disabled=turboNow;
+    $('charLoraScale').disabled=turboNow;
+    clr.style.opacity=turboNow?'.45':'';
+    $('charLoraHint').textContent = turboNow
+      ? 'turbo 档的调度来自 student 适配器，不支持叠加角色 LoRA'
+      : ((META.char_loras||[]).length
+          ? '来自 models/loras/，叠加在蒸馏 LoRA 之上，只加角色特征'
+          : '把 .safetensors 放进 models/loras/ 后刷新页面即可选择');
+  }
+  /* 步数：蒸馏档（4步）的步数由模型自带的 step_codes 决定，改不了；
+     原生档（12/20/50 及自定义）走标准 scheduler，步数可自由调。 */
+  if(m){
+    const si=$('stepsIn'), distilled=modeHasLora(), turboLocked=!!m.turbo;
+    /* 只在档位真的换了才重置步数；否则切主题/开预设之外的同步会把用户手动调的步数冲掉 */
+    if(LAST_MODE!==state.mode){ si.value=m.steps; LAST_MODE=state.mode; }
+    si.disabled=distilled||turboLocked;
+    /* CFG：跟着档位默认值走；用户手动改过的值在当前档位内保留 */
+    const ci=$('cfgIn');
+    if(ci){
+      /* 档位变了才重置成该档默认值；同档内保留用户手调的值 */
+      if(ci.dataset.mode!==state.mode){ ci.value=m.cfg; ci.dataset.mode=state.mode; }
+      ci.disabled=false;
+      /* 硬约束：蒸馏档必须 1.0（DMD 配 CFG>1 过饱和）；turbo 必须 >1（1.0 等于白跑负分支） */
+      if(distilled){ ci.value=1.0; ci.min=1; ci.max=1; }
+      else if(turboLocked){ ci.min=1.05; ci.max=10; if(!(parseFloat(ci.value)>1)) ci.value=3.0; }
+      else { ci.min=0; ci.max=10; }
+      ci.title = turboLocked
+        ? 'Turbo 的 guided step 用它；填 1.0 会退化成无 CFG（等于白跑负分支）'
+        : distilled
+        ? '蒸馏档必须 1.0：DMD 模型配 CFG>1 会过饱和'
+        : '官方推荐 2.5–3.5，且需要足够步数（20 步以上）才稳';
+    }
+    si.title = turboLocked ? 'Turbo 走固定调度（5 student + 2 guided + 8 DPM++），忽略步数'
+             : distilled ? '蒸馏档的步数由模型自带 step_codes 决定，不可更改' : '原生采样，可自由调节';
+    $('stepsHint').textContent = turboLocked
+      ? 'Turbo 固定 15 次网络前向（不论这里填几）'
+      : distilled
+      ? '蒸馏档固定 ' + m.steps + ' 步（模型自带 step_codes）'
+      : '可自由调（原生采样，每步约 11–18s）';
+    syncSkipState();
+  }
+}
+
+/* 跳步下拉的可用状态：只在 ≥10 步的原生档生效。
+   蒸馏档（4/8 步）轨迹 cos 只有 0.76~0.94，turbo 是固定 15 次前向调度，都不支持。 */
+function syncSkipState(){
+  const sk=$('skipSel'); if(!sk) return;
+  const m=curMode()||{};
+  const stepNow=parseInt($('stepsIn').value,10)||(m.steps||0);
+  const ok=!modeHasLora() && !m.turbo && stepNow>=10;
+  sk.disabled=!ok;
+  /* 禁用时必须给明显反馈：之前只是 disabled，外观没变，看起来像"点不开"的坏控件 */
+  sk.style.opacity = ok ? '' : '.45';
+  sk.style.cursor = ok ? '' : 'not-allowed';
+  const lbl=$('skipLbl');
+  if(lbl){
+    const why = m.turbo ? 'Turbo 固定调度'
+              : modeHasLora() ? '4/8 步蒸馏档'
+              : '步数 < 10';
+    lbl.textContent = ok
+      ? '跳步加速（自动 = 25/50 步自适应，20 步关闭）'
+      : '跳步加速 · 当前不可用（' + why + '）';
+    lbl.style.opacity = ok ? '' : '.7';
+  }
+  sk.title = ok
+    ? '自适应：相邻 pred 余弦 ≥0.972 才跳，跳一步后下一步必算'
+    : m.turbo ? 'Turbo 走固定 15 次前向调度（5 student + 2 guided + 8 DPM++），不支持跳步'
+    : modeHasLora() ? '4/8 步蒸馏档轨迹太陡（相邻 pred cos 只有 0.76~0.94），跳了必糊'
+    : '当前步数小于 10，跳步不生效';
+}
+
+/* LoRA 开关：本质是在「带 LoRA 的蒸馏档 ↔ 原生档」之间切；
+   切完 syncModes() 会把强度框、步数框的可用状态一起更新 */
+/* 手改步数时同步跳步下拉的可用状态（不跑完整 syncModes，避免冲掉用户输入） */
+$('stepsIn').addEventListener('input', syncSkipState);
+
+$('loraOn').onchange=()=>{
+  const on=$('loraOn').checked;
+  const has=modeHasLora();
+  const hasMode=id=>(META.lora_modes||[]).some(x=>x.id===id);
+  if(on && !has){
+    state.mode = 'akk4';   /* 打开：回默认的 4 步档（8 步 DMD2 档已于 2026-10-30 撤下） */
+  }else if(!on && has){
+    /* 关闭：走无 LoRA 的原生档。native12 已于 2026-10-23 撤下（由 turbo 接替），
+       再写死它会让 lora_mode 变成后端不认识的 id，所有生成 400 */
+    state.mode = hasMode('none') ? 'none' : (hasMode('full') ? 'full' : state.mode);
+  }
+  syncModes();
+  $('loraHint').title = on ? '' : '想彻底不用蒸馏件就用原生档（20/50 步）';
+};
+
+/* ───── 工作流预设（localStorage；只存参数，不动画面描述） ───── */
+const PKEY='moss-presets';
+function loadPresets(){ try{ return JSON.parse(localStorage.getItem(PKEY)||'[]'); }catch(e){ return []; } }
+function savePresets(a){ try{ localStorage.setItem(PKEY,JSON.stringify(a)); }catch(e){} }
+
+function currentParams(){
+  return {
+    mode:state.mode, engine:state.engine,
+    steps:parseInt($('stepsIn').value,10)||null,
+    cfg:$('cfgIn') ? parseFloat($('cfgIn').value) : null,
+    lora_scale:modeHasLora() ? parseFloat($('loraScale').value||modeLoraScale()) : null,
+    w:parseInt($('w').value,10), h:parseInt($('h').value,10),
+    seed:$('seed').value.trim()||'random',
+    negative:$('negative').value,
+    skip:$('skipSel') ? $('skipSel').value : 'auto',
+    two_stage:$('twoStage').checked,
+    stream:$('streamMode') ? $('streamMode').checked : true,
+    char_lora:$('charLora') ? ($('charLora').value || null) : null,
+    char_lora_scale:$('charLora') ? (parseFloat($('charLoraScale').value)||1.0) : null,
+    up_model:$('upModel').value
+  };
+}
+
+/* 先切档位/引擎再回填数值：syncModes() 会按档位重写步数与 LoRA 强度 */
+function applyParams(p){
+  if(p.mode && (META.lora_modes||[]).some(x=>x.id===p.mode)) state.mode=p.mode;
+  if(p.engine && (META.engines||[]).some(x=>x.id===p.engine)) state.engine=p.engine;
+  syncModes();
+  if(p.steps>0 && !$('stepsIn').disabled) $('stepsIn').value=p.steps;
+  if(p.cfg!=null && $('cfgIn')){ $('cfgIn').value=p.cfg; $('cfgIn').dataset.mode=state.mode; }
+  if(p.lora_scale!=null) $('loraScale').value=p.lora_scale;
+  if(p.w) $('w').value=p.w;
+  if(p.h) $('h').value=p.h;
+  if(p.seed!=null) $('seed').value=p.seed;
+  /* 提示词与负面词一起回填；预设里没有 prompt 字段时这里自然跳过 */
+  if(p.prompt!=null) $('prompt').value=p.prompt;
+  if(p.negative!=null) $('negative').value=p.negative;
+  if(p.skip!=null && $('skipSel')){
+    const want=String(p.skip);
+    const has=[...$('skipSel').options].some(o=>o.value===want);
+    $('skipSel').value = has ? want : 'auto';
+  }
+  /* two_stage 是引擎固定行为，不再由历史/预设恢复：
+     之前复用 msmlx 任务会把 MLX 8bit 也切成单进程 → 13G 峰值 + 全域 swap 抖动 */
+  $('twoStage').checked = true;
+  /* 角色 LoRA：文件已经不在就回退成"不叠加"，别把下拉留在空值上 */
+  if($('charLora')){
+    $('charLora').value = p.char_lora || '';
+    if($('charLora').value !== (p.char_lora || '')) $('charLora').value='';
+  }
+  if(p.char_lora_scale!=null && $('charLoraScale')) $('charLoraScale').value=p.char_lora_scale;
+  if(p.up_model) $('upModel').value=p.up_model;
+}
+
+function renderPresets(){
+  const box=$('presets'), arr=loadPresets();
+  box.innerHTML='';
+  $('presetEmpty').style.display=arr.length?'none':'';
+  arr.forEach((p,i)=>{
+    const el=document.createElement('div'); el.className='preset';
+    const mode=(META.lora_modes||[]).find(x=>x.id===p.mode);
+    el.title=[mode?mode.label:p.mode, p.steps?p.steps+' 步':'', p.w&&p.h?p.w+'×'+p.h:'',
+              p.up_model?('超分 '+(UPSCALE_LABEL(p.up_model))):''].filter(Boolean).join(' · ');
+    el.innerHTML='<span></span><span class="x" title="删除">✕</span>';
+    el.firstChild.textContent=p.name;
+    el.firstChild.onclick=()=>applyParams(p);
+    el.querySelector('.x').onclick=ev=>{
+      ev.stopPropagation();
+      if(!confirm('删除预设「'+p.name+'」？')) return;
+      const a=loadPresets(); a.splice(i,1); savePresets(a); renderPresets();
+    };
+    box.appendChild(el);
+  });
+}
+function UPSCALE_LABEL(id){
+  const x=(META && META.upscale_models || []).find(u=>u.id===id);
+  return x?x.label:id;
+}
+
+$('presetSave').onclick=()=>{
+  const f=$('presetForm');
+  f.classList.toggle('hidden');
+  if(!f.classList.contains('hidden')) $('presetName').focus();
+};
+$('presetCancel').onclick=()=>{ $('presetForm').classList.add('hidden'); $('presetName').value=''; };
+$('presetOk').onclick=()=>{
+  const name=$('presetName').value.trim();
+  if(!name){ $('presetName').focus(); return; }
+  const arr=loadPresets();
+  const p=Object.assign({name},currentParams());
+  const i=arr.findIndex(x=>x.name===name);   /* 同名覆盖，避免重复堆积 */
+  if(i>=0) arr[i]=p; else arr.push(p);
+  savePresets(arr); renderPresets();
+  $('presetName').value=''; $('presetForm').classList.add('hidden');
+};
+$('presetName').onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); $('presetOk').click(); } };
+
+/* ───── 生成 ───── */
+function generate(){
+  const prompt=$('prompt').value.trim();
+  if(!prompt){ showErr('先写点画面描述'); return; }
+  hideErr(); setBusy(true);
+  const body={
+    prompt, negative:$('negative').value,
+    engine:state.engine, lora_mode:state.mode,
+    /* 原生档没有 LoRA，别把界面上的 0.7 当参数发过去（会让快照记错） */
+    lora_scale:modeHasLora() ? parseFloat($('loraScale').value||modeLoraScale()) : null,
+    width:parseInt($('w').value,10), height:parseInt($('h').value,10),
+    seed:$('seed').value.trim()||'random',
+    skip:$('skipSel') ? $('skipSel').value : 'auto',
+    two_stage:$('twoStage').checked,
+    stream:$('streamMode') ? $('streamMode').checked : true,
+    enhance:$('enhance').checked
+  };
+  /* 角色 LoRA：选中才叠加。turbo 档的下拉虽然置灰，但 value 还在——
+     必须显式排除，否则后端会因"档位不支持叠加"直接 400 阻断生成 */
+  const charSel=curMode().turbo ? '' : ($('charLora')?$('charLora').value:'');
+  if(charSel){
+    body.char_lora=charSel;
+    const cs=parseFloat($('charLoraScale').value);
+    body.char_lora_scale=isNaN(cs)?1.0:cs;
+  }
+  /* CFG：填了就用；但蒸馏档强制 1.0、turbo 强制 >1（与 syncModes 的硬约束一致） */
+  let cfv=parseFloat($('cfgIn').value);
+  if(modeHasLora()) cfv=1.0;
+  if(curMode().turbo && !(cfv>1)) cfv=3.0;
+  if(!isNaN(cfv)) body.cfg=cfv;
+  if(body.width%16||body.height%16){ showErr('宽高必须是 16 的倍数'); setBusy(false); return; }
+  /* 用户显式填的步数覆盖档位默认值（后端已支持 steps 覆盖） */
+  const sv=parseInt($('stepsIn').value,10);
+  if(sv>0) body.steps=sv;
+  $('prog').classList.remove('hidden');
+  $('pbar').style.width='0%'; $('pPhase').textContent='提交中…'; $('pEta').textContent='';
+  fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  .then(r=>r.json())
+  .then(d=>{
+    if(d.error){ showErr(d.error); setBusy(false); return; }
+    JOB=d.id; LASTSEED=body.seed;
+    $('stTitle').textContent=d.topic; $('stSub').textContent=`${state.engine} · ${d.steps} 步 · CFG ${d.cfg}`;
+    $('stBody').innerHTML='<div style="text-align:center"><div class="spin"></div><div style="color:var(--dim);font-size:13px" id="stWait">模型加载中…</div></div>';
+    $('stAct').classList.add('hidden');
+    if(POLL) clearInterval(POLL); POLL=setInterval(pollJob,1500); pollJob();
+  })
+  .catch(e=>{ showErr(String(e)); setBusy(false); });
+}
+
+function pollJob(){
+  if(!JOB) return;
+  fetch('/api/job?id='+encodeURIComponent(JOB)).then(r=>r.json()).then(j=>{
+    if(j.error&&j.status===undefined) return;
+    $('pbar').style.width=(j.progress||0)+'%';
+    const ph={排队:'排队中',加载:'模型加载中…',编码:'文本编码中',去噪:'去噪采样中',解码:'VAE 解码中',超分:'超分中',重绘:'生成式重绘中',done:'完成',error:'失败'}[j.phase]||j.phase;
+    $('pPhase').innerHTML=`<b>${ph}</b>${j.step?' · '+j.step:''}${j.sec_per_step?' · '+j.sec_per_step.toFixed(1)+'s/步':''}`;
+    /* SeedVR2 没有分块进度，但它有真实的已用时长——照实显示，不编造百分比 */
+    if(j.status==='running' && j.started && !j.eta){
+      $('pEta').textContent='已用 '+Math.round(Date.now()/1000-j.started)+'s';
+    }else{
+      $('pEta').textContent=(j.eta&&j.status==='running')?('剩余 ~'+Math.round(j.eta)+'s'):'';
+    }
+    const w=document.getElementById('stWait'); if(w) w.textContent=ph+' '+(j.step||'');
+    if(j.status==='done'){
+      clearInterval(POLL); POLL=null; setBusy(false); JOB=null;
+      $('pPhase').innerHTML=`<b>完成</b> · ${j.elapsed}s`;
+      $('pEta').textContent='';
+      LASTFILE=j.output;
+      $('stSub').textContent=`${j.topic} · ${j.width}×${j.height} · ${j.elapsed}s`;
+      $('stBody').innerHTML=`<img class="main" src="/out/${encodeURIComponent(j.output)}?t=${Date.now()}" alt="">`;
+      $('stAct').classList.remove('hidden');
+      /* 强化失败但已回退原文出图：必须在界面上说清楚，否则用户会以为这张是"强化后"的 */
+      if(j.enhance_failed) showErr('提示词强化失败，本次已回退原文出图（原因见任务日志）');
+      loadHistory();
+    }else if(j.status==='error'){
+      clearInterval(POLL); POLL=null; setBusy(false); JOB=null;
+      showErr(j.error||'未知错误');
+      $('stBody').innerHTML='<div class="empty"><span class="big">✕</span>生成失败，看看左下角错误信息</div>';
+    }
+  }).catch(()=>{});
+}
+
+/* 刷新/重开页面后问服务端"有没有还在跑的任务"，有就接着显示进度，不用干等 */
+function resumeActive(){
+  fetch('/api/current').then(r=>r.json()).then(d=>{
+    const act=(d.jobs||[]).filter(j=>j.status==='running'||j.status==='queued');
+    if(!act.length) return;
+    const j=act[act.length-1];
+    JOB=j.id;
+    if(j.topic) $('stTitle').textContent=j.topic;   /* 刷新后接上任务时，标题也要接上 */
+    $('prog').classList.remove('hidden');
+    setBusy(true);
+    $('stBody').innerHTML='<div style="text-align:center"><div class="spin"></div>'+
+      '<div style="color:var(--dim);font-size:13px" id="stWait">已恢复监控（任务仍在后台运行）</div></div>';
+    $('stAct').classList.add('hidden');
+    $('pPhase').innerHTML='<b>恢复监控</b>';
+    if(POLL) clearInterval(POLL);
+    POLL=setInterval(pollJob,1500);
+    pollJob();
+  }).catch(()=>{});
+}
+
+/* ───── 历史 ───── */
+function loadHistory(){
+  fetch('/api/history').then(r=>r.json()).then(d=>{
+    $('histCount').textContent=d.files.length?('共 '+d.files.length+' 张'):'';
+    const s=$('histGrid'); s.innerHTML='';
+    /* 后端最多返回 200 张，原来前端又截到 80，于是"读不全"。
+       缩略图现在是 148px JPEG（~8KB），全量渲染毫无压力。 */
+    d.files.forEach(f=>{
+      const it=document.createElement('div'); it.className='hitem';
+      /* 图库用缩略图（148px JPEG ~10KB），原图只在灯箱里加载。
+         原来直接用 /out/ 原图，中位 0.7MB、最大 51MB，滚动一次就把内存吃满。 */
+      const src='/thumb/'+(f.sub?f.sub+'/':'')+encodeURIComponent(f.name);
+      it.innerHTML=`<img loading="lazy" src="${src}" alt="">
+        ${f.sub?'<span class="badge">×4</span>':''}
+        <div class="cap">${f.topic}</div>
+        <button class="up" title="超分 ×4（用灯箱里选中的模型）">✦</button>
+        <button class="del" title="删除">✕</button>`;
+      it.querySelector('.up').onclick=ev=>{ ev.stopPropagation(); LBF=f; doUpscale(); };
+      it.querySelector('img').onclick=()=>openLb(f);
+      it.querySelector('.del').onclick=ev=>{
+        ev.stopPropagation();
+        if(!confirm('删除 '+f.name+'？')) return;
+        fetch('/api/out/'+(f.sub?f.sub+'/':'')+encodeURIComponent(f.name),{method:'DELETE'}).then(()=>loadHistory());
+      };
+      s.appendChild(it);
+    });
+  });
+}
+
+/* 生成快照 → 可回填的参数（超分快照没有生成参数，不提供复用） */
+function metaToParams(m){
+  if(!m || m.type!=='generate') return null;
+  /* prompt 一起带上：复用参数时提示词也要回填（开启强化时存的是强化后文本，
+     prompt_original 留作对照，回填用真正跑出这张图的那份） */
+  return {mode:m.lora_mode, engine:m.engine, steps:m.steps, lora_scale:m.lora_scale,
+          char_lora:m.char_lora||null, char_lora_scale:m.char_lora_scale,
+          /* meta 里存的是数值（0.1），但下拉的 value 是 auto/adaptive/0.2…
+             自适应必须映射回 adaptive，否则回填会落到空选项 */
+          skip:m.skip_mode==='adaptive'?'adaptive':(m.skip!=null?String(m.skip):'auto'),
+          cfg:m.cfg, w:m.width, h:m.height, seed:String(m.seed), negative:m.negative,
+          prompt:m.prompt, prompt_original:m.prompt_original,
+          two_stage:m.two_stage};
+}
+
+function openLb(f){
+  LBF=f;
+  $('lbImg').src='/out/'+(f.sub?f.sub+'/':'')+encodeURIComponent(f.name);
+  let info=`<b>${f.topic}</b> · ${f.name} · ${(f.size/1024).toFixed(0)} KB · ${new Date(f.mtime*1000).toLocaleString('zh-CN')}`;
+  const m=f.meta;
+  if(m && m.type==='generate'){
+    const md=(META.lora_modes||[]).find(x=>x.id===m.lora_mode);
+    info+='<br><span style="color:var(--acc)">生成</span> '+
+      (md?md.label:m.lora_mode||'')+' · '+m.steps+' 步 · CFG '+m.cfg+
+      (m.lora_scale!=null?' · LoRA '+m.lora_scale:'')+
+      (m.char_lora?' · 角色 '+m.char_lora.replace(/\.safetensors$/,'')+'@'+(m.char_lora_scale!=null?m.char_lora_scale:1):'')+
+      ' · 种子 '+(m.seed==null?'?':m.seed)+
+      ' · '+m.width+'×'+m.height+(m.elapsed?' · '+m.elapsed+'s':'');
+  }else if(m && m.type==='upscale'){
+    info+='<br><span style="color:var(--acc)">超分</span> '+(m.model_label||m.model)+' ×'+m.scale+
+      ' ← '+(m.source||'')+' · '+m.width+'×'+m.height+(m.elapsed?' · '+m.elapsed+'s':'');
+  }else{
+    info+='<br><span style="color:var(--faint)">这张图没有参数快照（早于本次改造生成的）</span>';
+  }
+  $('lbMeta').innerHTML=info;
+  $('lbReuse').classList.toggle('hidden', !metaToParams(m));
+  $('lb').classList.remove('hidden');
+}
+/* ───── 超分 ───── */
+function doUpscale(){
+  if(!LBF) return;
+  const btn=$('upBtn');
+  btn.disabled=true; btn.textContent='提交中…';
+  fetch('/api/upscale',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:LBF.name, model:$('upModel').value, sub:LBF.sub||''})})
+  .then(r=>r.json()).then(d=>{
+    btn.disabled=false; btn.textContent='✦ 超分 ×4';
+    if(d.error){ showErr(typeof d.error==='string'?d.error:JSON.stringify(d.error)); return; }
+    hideErr();
+    $('lb').classList.add('hidden');
+    JOB=d.id; LASTFILE=null;
+    $('gen').disabled=true;            /* 与生成互斥，避免抢 GPU */
+    $('pbar').style.width='0%';
+    const ux=(META.upscale_models||[]).find(x=>x.id===$('upModel').value);
+    const isRedraw = ux && ux.id==='seedvr2';
+    $('stSub').textContent=(isRedraw?'重绘 ×4':'超分 ×4')+' · '+(ux?ux.label:'')+' · '+LBF.topic;
+    $('stBody').innerHTML='<div class="empty"><span class="big">✦</span>正在超分…<div id="stWait">准备中</div></div>';
+    $('stAct').classList.add('hidden');
+    if(POLL) clearInterval(POLL);
+    POLL=setInterval(pollJob,900);
+    pollJob();
+  }).catch(()=>{ btn.disabled=false; btn.textContent='✦ 超分 ×4'; showErr('超分提交失败'); });
+}
+$('upBtn').onclick=doUpscale;
+
+$('lbReuse').onclick=()=>{
+  const p=LBF&&metaToParams(LBF.meta);
+  if(!p) return;
+  applyParams(p);
+  $('lb').classList.add('hidden');
+};
+$('lbX').onclick=()=>$('lb').classList.add('hidden');
+$('lb').onclick=e=>{ if(e.target===$('lb')) $('lb').classList.add('hidden'); };
+
+/* ───── 工具 ───── */
+function setBusy(b){ $('gen').disabled=b; $('gen').textContent=b?'生成中…':'✦ 生成'; }
+function showErr(t){ const e=$('errBox'); e.classList.remove('hidden'); e.textContent=t; }
+function hideErr(){ $('errBox').classList.add('hidden'); }
+$('seedBtn').onclick=()=>{ $('seed').value = $('seed').value==='random' ? String(Math.floor(Math.random()*1e6)) : 'random'; };
+$('btnFull').onclick=()=>{ if(LASTFILE) window.open('/out/'+encodeURIComponent(LASTFILE),'_blank'); };
+$('btnReuseSeed').onclick=()=>{ if(LASTSEED!=null){ $('seed').value=LASTSEED; } };
+$('histRefresh').onclick=loadHistory;
+/* 缩略图尺寸：改一个 CSS 变量，网格与缩略图高度都跟着走 */
+document.querySelectorAll('#thumbSz button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('#thumbSz button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    document.documentElement.style.setProperty('--thumb', b.dataset.sz+'px');
+  };
+});
+$('gen').onclick=generate;
+document.addEventListener('keydown',e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){ e.preventDefault(); generate(); }
+  if(e.key==='Escape') $('lb').classList.add('hidden');
+});
+
+/* ───── 系统监控 ───── */
+/* 断连自愈：服务被壳重启/崩掉时，页面不会自己活过来——刷新按钮也没用
+   （服务没了，重新加载只会得到错误页）。这里持续探测，服务一回来就自动刷新。 */
+let sysFails=0, reconnecting=false;
+function setNetBanner(on){
+  const b=$('netBanner'); if(b) b.classList.toggle('hidden', !on);
+}
+function reconnectLoop(){
+  if(!reconnecting) return;
+  fetch('/api/sys',{cache:'no-store'})
+    .then(r=>{ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+    .then(()=>{ location.reload(); })
+    .catch(()=>{ setTimeout(reconnectLoop,1500); });
+}
+function pollSys(){
+  fetch('/api/sys').then(r=>{ if(!r.ok) throw new Error('http '+r.status); return r.json(); }).then(s=>{
+    if(reconnecting){ reconnecting=false; setNetBanner(false); }
+    sysFails=0;
+    const swap=$('mSwap');
+    /* swap_total 为 0 = 系统没启用 swap，直接说明比显示 "0.0 / 0.0 G" 清楚 */
+    swap.textContent = s.swap_total_gb>0
+      ? (s.swap_used_gb.toFixed(1)+' / '+s.swap_total_gb.toFixed(1)+' G')
+      : '未启用';
+    swap.title = s.swap_total_gb>0 ? '已用 / 总量' : '本机未启用 swap，内存不足会直接压缩内存';
+    swap.parentElement.classList.toggle('hot', s.swap_used_gb>4);
+    swap.parentElement.classList.toggle('bad', s.swap_used_gb>7);
+    /* 显示具体大小：可用 = free + inactive + speculative + purgeable。
+       memory_pressure 的 "free percentage" 是压力指标、不等于空闲比例，故不用它。 */
+    const avail=(s.mem_avail_gb!=null)?s.mem_avail_gb:s.free_gb;
+    $('mFree').textContent = avail.toFixed(1)+' / '+(s.mem_total_gb||0).toFixed(1)+' G';
+    $('mFree').title='可用 / 物理总内存（可用 = free + inactive + speculative + purgeable）'
+      +(s.mem_free_pct!=null?('\n内存压力参考：'+s.mem_free_pct+'%（数值越高压力越小，不是空闲比例）'):'');
+    $('mDisk').textContent=s.disk_free_gb.toFixed(0)+' G';
+    $('mRss').textContent=s.job_rss_mb?s.job_rss_mb+' M':'—';
+    /* 队列：后端本来就是串行执行，这里只是把"还排着几个"显示出来 */
+    const q=s.queue||0;
+    $('mQueue').textContent=q;
+    $('mQueueW').classList.toggle('hidden', !q);
+  }).catch(()=>{
+    sysFails++;
+    if(sysFails>=3 && !reconnecting){
+      reconnecting=true;
+      setNetBanner(true);
+      reconnectLoop();
+    }
+  });
+}
+
+/* ───── 主题切换 ───── */
+const themeBtn=$('themeBtn');
+function applyTheme(light){
+  document.body.classList.toggle('light',light);
+  themeBtn.textContent=light?'🌙 深色':'☀️ 日间';
+  try{localStorage.setItem('moss-theme',light?'light':'dark');}catch(e){}
+}
+themeBtn.onclick=()=>applyTheme(!document.body.classList.contains('light'));
+$('reloadBtn').onclick=()=>location.reload();   /* 桌面壳没有地址栏，给个显式刷新入口 */
+try{ if(localStorage.getItem('moss-theme')==='light') applyTheme(true); }catch(e){}
+
+initMeta().then(()=>{ renderPresets(); loadHistory(); resumeActive(); });
+pollSys(); setInterval(pollSys,2500);
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# 主引擎：mflux 0.24 适配层（.venv-mflux）
+mflux==0.24.0
+mlx==0.32.4
+numpy>=2.0
+Pillow>=11
+huggingface_hub>=0.30
+safetensors>=0.4

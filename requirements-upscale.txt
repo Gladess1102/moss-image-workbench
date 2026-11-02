@@ -1,0 +1,4 @@
+# 可选：超分（装进主 venv 或独立 venv 均可，工作台只经子进程调用）
+torch>=2.9
+spandrel
+pyoxipng

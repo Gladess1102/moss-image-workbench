@@ -1,0 +1,7 @@
+# 第二引擎：moss-image-mlx（.venv-msmlx，Turbo 档需要）
+moss-image-mlx==0.2.0
+mlx==0.32.4
+mlx-lm==0.32.2
+numpy>=2.0
+Pillow>=11
+huggingface_hub>=0.30
