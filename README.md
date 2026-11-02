@@ -73,9 +73,8 @@ MOSS-Image 是 5B DiT + 9B 文本编码器的双语生图模型。官方管线�
     .venv-mflux/bin/python scripts/doctor.py
     ./run.sh                # http://127.0.0.1:7860
 
-- 默认下载 compact tier（约 8 GB）；24 GB+ 可用参数 --tier 8bit 拉高画质档。
-- 4 步蒸馏 LoRA（akhaliq v3）可选，放到 models/akhaliq/akk_4step_lora.safetensors；
-  没有时默认档自动回落到 20 步。
+- 默认下载 compact tier（约 8 GB）+ 4 步蒸馏 LoRA（1.2 GB）；24 GB+ 用参数 --tier 8bit
+  拉高画质档，--no-4step 可跳过 LoRA（默认档会自动回落到 20 步）。
 - 只支持 macOS + Apple Silicon，这是 MLX/Metal 的硬约束。
 
 ## 档位一览

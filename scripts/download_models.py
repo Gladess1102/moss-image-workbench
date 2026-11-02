@@ -6,13 +6,14 @@
 产出：
   models/mlx_moss_sft/   tier 目录（transformer / text_encoder / tokenizer / vae / scheduler）
   models/mlx_vi_8bit     指向 mlx_moss_sft 的符号链接（mflux 适配层读这个目录名）
-  models/akhaliq/        空目录，等你放入 4 步蒸馏 LoRA
+  models/akhaliq/        4 步蒸馏 LoRA（自动从 akhaliq/MOSS-Image-SFT-4-steps 下载）
   models/loras/          空目录，放你自己的角色 LoRA
 
 可中断重跑：已下载的文件不会重复传输。
 """
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -24,10 +25,16 @@ TIERS = {
     "8bit": "VisualInference/MOSS-Image-SFT-MLX-8bit",
 }
 
+# akhaliq 的 4 步蒸馏 LoRA：kohya 训练，键名与 mflux 的 756 个 diffusion_model.* 张量一一对应，
+# 不需要转换。euler-* 是 Euler 原生版本（免 dataspace / time_embedding 两件套）。
+AKK4_REPO = "akhaliq/MOSS-Image-SFT-4-steps"
+AKK4_FILE = "euler-update-100/checkpoint-update-100/lora.safetensors"
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tier", choices=sorted(TIERS), default="compact")
+    ap.add_argument("--no-4step", action="store_true", help="跳过 1.2 GB 的 4 步蒸馏 LoRA")
     a = ap.parse_args()
     try:
         from huggingface_hub import snapshot_download
@@ -53,10 +60,20 @@ def main():
     for sub in ("akhaliq", "loras", "turbo"):
         (MODELS / sub).mkdir(exist_ok=True)
 
+    target = MODELS / "akhaliq" / "akk_4step_lora.safetensors"
+    if a.no_4step:
+        print("[3/3] 跳过 4 步 LoRA（--no-4step）")
+    elif target.exists():
+        print("[3/3] 4 步 LoRA 已存在：%s" % target)
+    else:
+        print("[3/3] 下载 4 步蒸馏 LoRA（约 1.2 GB）")
+        from huggingface_hub import hf_hub_download
+        got = hf_hub_download(AKK4_REPO, AKK4_FILE)
+        shutil.copyfile(got, target)
+        print("      已放到 %s" % target)
+
     print()
-    print("权重就绪。还差一个可选件：4 步蒸馏 LoRA（akhaliq v3）")
-    print("  放到 models/akhaliq/akk_4step_lora.safetensors 即可启用「4步·极速」档；")
-    print("  不放也能跑，默认档会自动回落到 20 步。")
+    print("权重就绪。4 步档（默认）与 20/25/50 步档都可直接使用。")
     print()
     print("下一步：  .venv-mflux/bin/python scripts/doctor.py")
 

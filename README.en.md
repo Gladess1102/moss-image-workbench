@@ -79,9 +79,8 @@ inference on close), crash watchdog.
     .venv-mflux/bin/python scripts/doctor.py
     ./run.sh                # http://127.0.0.1:7860
 
-- Downloads the compact tier (~8 GB) by default; use --tier 8bit on 24 GB+ machines.
-- The 4-step distilled LoRA (akhaliq v3) is optional: models/akhaliq/akk_4step_lora.safetensors.
-  Without it the default tier falls back to 20 steps.
+- Downloads the compact tier (~8 GB) plus the 4-step distilled LoRA (1.2 GB); use --tier 8bit on
+  24 GB+ machines, or --no-4step to skip the LoRA (the default tier then falls back to 20 steps).
 - macOS + Apple Silicon only (MLX/Metal constraint).
 
 ## Tiers
