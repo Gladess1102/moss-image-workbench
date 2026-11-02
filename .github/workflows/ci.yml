@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 语法检查（不 import，纯 py_compile）
+        run: python -m compileall -q web scripts
+
+      - name: 防止硬编码本机路径回归
+        run: |
+          if grep -rn --include='*.py' --include='*.sh' --include='*.html' '/Users/[a-z]' .; then
+            echo "发现硬编码的个人路径，请改用 MOSS_* 环境变量"; exit 1
+          fi
+
+      - name: 必需文件齐全
+        run: |
+          for f in README.md README.en.md LICENSE NOTICE install.sh run.sh \
+                   web/app.py web/index.html scripts/download_models.py scripts/doctor.py; do
+            test -f "$f" || { echo "missing: $f"; exit 1; }
+          done
+
+      - name: doctor 可执行（缺权重时应干净报错而不是崩）
+        run: python scripts/doctor.py || true
