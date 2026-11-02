@@ -3,6 +3,7 @@
 **16 GB Apple Silicon Mac 上真正跑得动的 MOSS-Image 本地工作台。**
 不是「能加载」，是「连续出图、swap 近零、每一步加速都有 PSNR 验收」。
 
+[![ci](https://github.com/Gladess1102/moss-image-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/Gladess1102/moss-image-workbench/actions/workflows/ci.yml)
 macOS · Apple Silicon · MLX · Apache-2.0 ｜ [English](README.en.md)
 
 ![工作台主界面](assets/ui-main.webp)

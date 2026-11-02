@@ -3,6 +3,7 @@
 **A local workbench that actually runs MOSS-Image on a 16 GB Apple Silicon Mac.**
 Not "it loads" - "it generates continuously, swap stays near zero, and every speedup is validated with PSNR".
 
+[![ci](https://github.com/Gladess1102/moss-image-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/Gladess1102/moss-image-workbench/actions/workflows/ci.yml)
 macOS · Apple Silicon · MLX · Apache-2.0 | [中文](README.md)
 
 ![Workbench UI](assets/ui-main.webp)
