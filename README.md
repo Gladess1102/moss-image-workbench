@@ -5,6 +5,8 @@
 
 macOS · Apple Silicon · MLX · Apache-2.0 ｜ [English](README.en.md)
 
+![工作台主界面](assets/ui-main.webp)
+
 ---
 
 ## 为什么需要它
@@ -32,6 +34,10 @@ MOSS-Image 是 5B DiT + 9B 文本编码器的双语生图模型。官方管线�
 
 38 dB 属于肉眼无损区间，省 28.8%。20 步档测出来只有 24.3 dB，所以**不开跳步**——
 该省的省，不该省的承认省不了。
+
+![25 步：不跳 499.7s / 跳步 335.3s 32.17dB / 跳步+外推 334.7s 33.68dB](assets/skip-25.webp)
+
+![50 步：不跳 1067.5s / 跳步+外推 760.3s 38.01dB](assets/skip-50.webp)
 
 ### 3. 引擎：两条路互为备份
 

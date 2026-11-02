@@ -5,6 +5,8 @@ Not "it loads" - "it generates continuously, swap stays near zero, and every spe
 
 macOS · Apple Silicon · MLX · Apache-2.0 | [中文](README.md)
 
+![Workbench UI](assets/ui-main.webp)
+
 ---
 
 ## Why it exists
@@ -35,6 +37,10 @@ skipped steps by extrapolating the trajectory. Then it is compared against a no-
 
 38 dB is visually lossless - 28.8% saved. The 20-step tier measured 24.3 dB with skipping,
 so skipping stays **off** there. Wins where they exist, honesty where they do not.
+
+![25 steps: no-skip 499.7s / skip 335.3s 32.17dB / skip+extrapolation 334.7s 33.68dB](assets/skip-25.webp)
+
+![50 steps: no-skip 1067.5s / skip+extrapolation 760.3s 38.01dB](assets/skip-50.webp)
 
 ### 3. Engines: two independent paths
 
