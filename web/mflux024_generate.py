@@ -19,7 +19,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 import mlx.core as mx
 
-MODEL = os.environ.get("MOSS_MODEL") or str(ROOT / "models" / "mlx_vi_8bit")
+# 统一读 MOSS_MODELS（= 模型根目录），与 app.py / doctor.py 同源；
+# 旧变量 MOSS_MODEL（单数，直接指 tier 目录）保留兼容。
+MODELS = os.environ.get("MOSS_MODELS") or str(ROOT / "models")
+MODEL = os.environ.get("MOSS_MODEL") or os.path.join(MODELS, "mlx_vi_8bit")
 
 
 def _assert_finite_embeds(pos, neg, where):

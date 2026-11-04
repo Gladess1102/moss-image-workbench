@@ -82,6 +82,9 @@ inference on close), crash watchdog.
 
 - Downloads the compact tier (~8 GB) plus the 4-step distilled LoRA (1.2 GB); use --tier 8bit on
   24 GB+ machines, or --no-4step to skip the LoRA (the default tier then falls back to 20 steps).
+  install.sh forwards both flags to scripts/download_models.py.
+- Optional desktop shell: `python3 -m pip install -r requirements-desktop.txt`, then
+  `python3 web/desktop.py` - a WKWebView window that kills inference processes on close.
 - macOS + Apple Silicon only (MLX/Metal constraint).
 
 ## Tiers

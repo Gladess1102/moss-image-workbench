@@ -2,3 +2,7 @@
 torch>=2.9
 spandrel
 pyoxipng
+# MewZoom 4X（默认超分模型）的 TrunkNet 不在 spandrel 里，必须用官方库。
+# 它的依赖声明会顶 torch 版本，装的时候用 --no-deps：
+#   pip install --no-deps mewzoom==1.0.0
+mewzoom==1.0.0

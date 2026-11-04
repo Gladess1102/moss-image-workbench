@@ -122,6 +122,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # 先跑检查再输出 JSON：原来 JSON 在 main() 之前打印，RESULTS 还是空数组
+    _rc = main()
     if "--json" in sys.argv:
         print(json.dumps(RESULTS, ensure_ascii=False, indent=2))
-    sys.exit(main())
+    sys.exit(_rc)

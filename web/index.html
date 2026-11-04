@@ -410,6 +410,8 @@ body.light .hitem img{background:#e7e5d4}
 'use strict';
 const $=id=>document.getElementById(id);
 let META=null, JOB=null, POLL=null, LASTFILE=null, LASTSEED=null, LBF=null, LAST_MODE=null;
+/* 连续轮询失败计数：服务挂了/任务丢了时，原来的空 catch 会让进度条永远转圈 */
+let POLLFAIL=0;
 const state={engine:'mlx8', mode:'akk4'};
 /* 档位是否带 LoRA 由后端 /api/meta 的 lora 字段决定（新增 akhaliq 档后不再写死 id） */
 function curMode(){ return ((META&&META.lora_modes)||[]).find(x=>x.id===state.mode)||{}; }
@@ -791,6 +793,7 @@ function generate(){
 function pollJob(){
   if(!JOB) return;
   fetch('/api/job?id='+encodeURIComponent(JOB)).then(r=>r.json()).then(j=>{
+    POLLFAIL=0;
     if(j.error&&j.status===undefined) return;
     $('pbar').style.width=(j.progress||0)+'%';
     const ph={排队:'排队中',加载:'模型加载中…',编码:'文本编码中',去噪:'去噪采样中',解码:'VAE 解码中',超分:'超分中',重绘:'生成式重绘中',done:'完成',error:'失败'}[j.phase]||j.phase;
@@ -818,7 +821,13 @@ function pollJob(){
       showErr(j.error||'未知错误');
       $('stBody').innerHTML='<div class="empty"><span class="big">✕</span>生成失败，看看左下角错误信息</div>';
     }
-  }).catch(()=>{});
+  }).catch(()=>{
+    /* 原来这里是空实现：服务挂掉后进度条一直转，用户不知道发生了什么。
+       连续 5 次（约 7.5s）拿不到任务状态就明确报错并停止轮询。 */
+    if(++POLLFAIL<5) return;
+    clearInterval(POLL); POLL=null; setBusy(false); JOB=null; POLLFAIL=0;
+    showErr('连续 5 次拿不到任务状态：工作台服务可能已停止。检查后台进程后重新启动，刷新页面可恢复监控。');
+  });
 }
 
 /* 刷新/重开页面后问服务端"有没有还在跑的任务"，有就接着显示进度，不用干等 */

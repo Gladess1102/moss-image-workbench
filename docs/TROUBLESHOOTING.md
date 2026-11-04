@@ -56,3 +56,10 @@ macOS 的 App Nap 会冻结后台 WKWebView 的 JS 定时器。
 
 超分权重不随仓库分发。把对应权重放到 web/models/（见 web/upscale_registry.py 的 rel 字段），
 或不用超分 —— 生成功能不受影响。
+
+## 超分报「执行器未就绪（缺 xxx 或 pysafe）」
+
+pysafe 是随仓库分发的几行包装脚本（tools/pysafe）：它在 torch 析构前 os._exit，
+绕开 macOS 上 MetalShaderLibrary 的退出崩溃。缺它就四路超分全不可用。
+确认 tools/pysafe 存在且有执行位；路径可以覆盖：MOSS_PYSAFE=/path/to/pysafe ./run.sh。
+MewZoom 还要单独装官方库（它不在 spandrel 里）：pip install --no-deps mewzoom==1.0.0。

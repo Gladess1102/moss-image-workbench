@@ -1,0 +1,49 @@
+#!/bin/bash
+# pysafe — 运行 Python 脚本，规避 PyTorch/torchvision 的退出期析构崩溃。
+#
+# 背景：macOS 27 + torch 2.14 下，进程只要 import 过 torchvision（spandrel 会拉它），
+# 退出时必崩在 at::native::mps::MetalShaderLibrary::~MetalShaderLibrary()
+# （exit() -> __cxa_finalize_ranges 阶段的 use-after-free），
+# 表现为 SIGSEGV(139)/SIGBUS(138) + 系统崩溃报告弹窗。
+#
+# 本包装器在脚本跑完后、C 层析构开始前调用 os._exit()，直接终结进程：
+#   - 不再崩溃、不再弹窗
+#   - 退出码正确传递（0 / SystemExit 的码 / 未捕获异常 1）
+#
+# 用法：
+#   pysafe  your_script.py arg1 arg2
+#   PYSAFE_PYTHON=/path/to/python pysafe your_script.py
+#
+# 注意：os._exit 会跳过 atexit / 析构，所以脚本自身必须确保结果已 flush/落盘。
+#
+# 2026-11-04：随仓库分发（原来只在作者本机 ~/moss-image/upscale/tools/ 下，
+# 干净 clone 里没有这个文件 → 四路超分全部不可用）。工作台用 MOSS_PYSAFE 覆盖路径。
+
+PY="${PYSAFE_PYTHON:-python3}"
+exec "$PY" -c '
+import os, sys, runpy, traceback
+
+if len(sys.argv) < 2:
+    sys.stderr.write("pysafe: usage: pysafe <script.py> [args...]\n")
+    os._exit(2)
+
+path = sys.argv[1]
+sys.argv = sys.argv[1:]
+
+code = 0
+try:
+    runpy.run_path(path, run_name="__main__")
+except SystemExit as e:
+    c = e.code
+    code = c if isinstance(c, int) else (0 if c is None else 1)
+except BaseException:
+    traceback.print_exc()
+    code = 1
+
+try:
+    sys.stdout.flush()
+    sys.stderr.flush()
+except Exception:
+    pass
+os._exit(code)
+' "$@"

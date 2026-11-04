@@ -19,11 +19,13 @@ import time
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
 
-import app  # 复用 _optimize_png / _write_meta / _read_meta / OUT / UPSCALE_DIR
+# 只 import 纯工具模块：原来 import app 会连带执行 app.py 的模块级副作用
+# （写 shutdown token、准备引擎路径），压个图不需要那些。
+import pngtools as P  # 复用 _optimize_png / _write_meta / _read_meta / OUT / UPSCALE_DIR
 
 
 def iter_pngs(min_bytes):
-    for d in (app.OUT, app.UPSCALE_DIR):
+    for d in (P.OUT, P.UPSCALE_DIR):
         if not os.path.isdir(d):
             continue
         for name in sorted(os.listdir(d)):
@@ -36,11 +38,12 @@ def iter_pngs(min_bytes):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="最多处理几张（0=全部）")
-    ap.add_argument("--level", type=int, default=app._PNG_OPT_LEVEL)
+    ap.add_argument("--level", type=int, default=P._PNG_OPT_LEVEL)
     ap.add_argument("--min-mb", type=float, default=0.3)
     args = ap.parse_args()
-    if app._oxi is None:
-        print("缺少 pyoxipng：pip3 install --target _pylibs pyoxipng")
+    if P._oxi is None:
+        # 代码里找的是 web/_pylibs（见 pngtools.py），提示必须指到同一个目录
+        print("缺少 pyoxipng：pip3 install --target web/_pylibs pyoxipng")
         return 2
     if args.level <= 0:
         print("level 必须 > 0")
@@ -57,7 +60,7 @@ def main():
     done = 0
     t0 = time.time()
     for i, p in enumerate(files, 1):
-        res = app._optimize_png(p, level=args.level)
+        res = P._optimize_png(p, level=args.level)
         if res and res[1] < res[0]:
             saved += res[0] - res[1]
             done += 1
@@ -65,12 +68,12 @@ def main():
                 i, len(files), os.path.basename(p)[:46], res[0] / 1e6,
                 res[1] / 1e6, (1 - res[1] / res[0]) * 100), flush=True)
             # 同步更新同名快照里的 size，灯箱/历史里看到的就是压缩后的
-            meta = app._read_meta(p)
+            meta = P._read_meta(p)
             if isinstance(meta, dict):
                 meta["size"] = res[1]
                 meta["opt"] = {"before": res[0], "after": res[1],
                                "level": args.level}
-                app._write_meta(p, meta)
+                P._write_meta(p, meta)
         else:
             print("[%d/%d] %-46s 跳过（无收益）" % (
                 i, len(files), os.path.basename(p)[:46]), flush=True)

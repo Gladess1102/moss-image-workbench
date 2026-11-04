@@ -1,0 +1,5 @@
+# 可选：桌面壳（macOS 原生 WKWebView 承载工作台，关窗即清理推理进程）
+# 装进要跑 web/desktop.py 的那个解释器：
+#   python3 -m pip install -r requirements-desktop.txt
+#   python3 web/desktop.py
+pywebview>=5.0

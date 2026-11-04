@@ -7,7 +7,7 @@ Engines
          two_stage on by default: encoder and DiT live in separate processes,
          so the 16 GB machine never swaps during generation.
 """
-import hashlib, json, math, os, random, re, shutil, signal, subprocess, sys, threading, time, uuid
+import hashlib, json, math, os, random, re, select, shutil, signal, subprocess, sys, tempfile, threading, time, uuid
 from collections import deque
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, unquote, parse_qs
@@ -16,18 +16,44 @@ from PIL import Image
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
+sys.path.insert(0, BASE)          # 同目录模块（pngtools / upscale_registry）
 
 # ── 2026-10-24 审查修复 ────────────────────────────────────────────────
 # 1) /api/shutdown 原来是无鉴权 GET：浏览器里任意网页写一行
 #    <img src="http://127.0.0.1:7860/api/shutdown"> 就能杀掉服务和正在跑的任务。
 #    改成要求本地 token（写在 /tmp，desktop.py / .command 读它）。
+# 2026-11-04：token 文件名带 pid —— 原来固定 /tmp/moss-shutdown.token，两个实例会互相
+# 覆盖；并且改成只在 __main__ 里落盘（compress_history.py 会 import 本模块，不该有副作用）。
 SHUTDOWN_TOKEN = os.environ.get("MOSS_SHUTDOWN_TOKEN") or uuid.uuid4().hex
-try:
-    with open("/tmp/moss-shutdown.token", "w", encoding="utf-8") as _tf:
-        _tf.write(SHUTDOWN_TOKEN)
-    os.chmod("/tmp/moss-shutdown.token", 0o600)   # 同机其他用户不该读到
-except OSError:
-    pass
+
+
+def token_path(pid=None):
+    """token 文件路径。desktop.py 按 /api/health 返回的 pid 读同名文件。"""
+    return "/tmp/moss-shutdown-%d.token" % (os.getpid() if pid is None else int(pid))
+
+
+def _write_token_file():
+    """一次建好并带 0600：先 open 后 chmod 有窗口；O_NOFOLLOW 防符号链接截断目标文件。"""
+    path = token_path()
+    for attempt in (0, 1):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            if attempt:
+                return
+            try:
+                os.remove(path)      # 同 pid 的上次残留（pid 复用）
+            except OSError:
+                return
+            continue
+        except OSError:
+            return
+        try:
+            os.write(fd, SHUTDOWN_TOKEN.encode())
+        finally:
+            os.close(fd)
+        return
+
 
 # 2) pysafe 内部的 python 取自 $PYSAFE_PYTHON 或 PATH。
 #    从 Finder/launchd 启动时 PATH 可能是 Apple 自带的 python3（无 torch/spandrel/mlx），
@@ -64,10 +90,12 @@ PY = sys.executable
 VENV_PY, _MSMLX_OK = _pick_python("MOSS_MSMLX_PY", ".venv-msmlx")
 MSMLX_RUNNER = os.path.join(BASE, "msmlx_runner.py")
 MSMLX_BASE = os.path.join(MODELS, "mlx_moss_sft")
-OUT = os.environ.get("MOSS_OUT") or os.path.expanduser("~/Pictures/MOSS-Image")
+# 输出目录与 PNG 重压/快照的实现在 pngtools.py（compress_history.py 也要用，
+# 但它不该 import 本模块去拿函数）。
+import pngtools  # noqa: E402
+from pngtools import (OUT, UPSCALE_DIR, _optimize_async, _optimize_png,  # noqa: E402
+                      _read_meta, _write_meta)
 os.makedirs(OUT, exist_ok=True)
-# 超分成图单独放子文件夹，不跟原图混在一起
-UPSCALE_DIR = os.path.join(OUT, "upscaled")
 os.makedirs(UPSCALE_DIR, exist_ok=True)
 
 MLX8 = os.path.join(MODELS, "mlx_vi_8bit")
@@ -223,9 +251,35 @@ MEWZOOM_RUNNER = os.path.join(BASE, "mewzoom_runner.py")
 # Thera：MLX 神经热场，支持任意尺度；代码在 web/thera/，同样独立进程执行
 THERA_RUNNER = os.path.join(BASE, "thera_runner.py")
 
+
+def _upscale_runner(mdef):
+    """该超分引擎对应的执行器脚本（spandrel 系走 upscale_runner.py）。"""
+    eng = mdef.get("engine", "spandrel")
+    if eng == "mewzoom":
+        return MEWZOOM_RUNNER
+    if eng == "thera":
+        return THERA_RUNNER
+    return UPSCALE_RUNNER
+
+
+def _upscale_ok(model_id, mdef):
+    """可用性 = 引擎真能跑起来，而不只是权重文件在。
+
+    原来只查 SR.weight_ok()（权重），pysafe 或执行器缺失时 /api/meta 仍报可用，
+    用户在 UI 里点了才拿到 500。seedvr2 走 CLI、不经 pysafe，单独判。
+    """
+    if mdef.get("engine") == "seedvr2":
+        return bool(SEEDVR2_CLI)
+    if not (os.path.isfile(PYSAFE) and os.path.isfile(_upscale_runner(mdef))):
+        return False
+    return SR.weight_ok(model_id)
+
+
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 GPU_LOCK = threading.Lock()
+# 排队上限：单任务峰值 13 GB，队列不限的话一口气点十几次就把机器压进 swap。
+MAX_QUEUE = int(os.environ.get("MOSS_MAX_QUEUE", "6") or 0)
 SYS = {"prev": None, "ring": deque(maxlen=90)}
 
 # ── 生命周期（仅桌面壳拉起时启用）──────────────────────────────────────
@@ -310,16 +364,75 @@ def make_topic(prompt):
     return "-".join(words[:3]) if words else "image"
 
 
+_PATH_LOCK = threading.Lock()
+_CLAIMED = set()
+
+
 def unique_path(topic):
+    """在锁内占位，返回 (文件名, 绝对路径)。
+
+    原来的检查是"锁外 + os.path.exists + 文件名精度到秒"：同一秒里提交两个同 topic
+    的任务会拿到同一个文件名，互相覆盖。这里用进程内占位集合（而不是先建空文件——
+    空 .png 会被历史列表当成品图扫描）。
+    """
     ts = time.strftime("%Y%m%d-%H%M%S")
-    name = topic + "_" + ts + ".png"
-    path = os.path.join(OUT, name)
-    n = 2
-    while os.path.exists(path):
-        name = topic + "_" + ts + "-" + str(n) + ".png"
-        path = os.path.join(OUT, name)
-        n += 1
-    return name, path
+    with _PATH_LOCK:
+        n = 1
+        while True:
+            name = topic + "_" + ts + (".png" if n == 1 else "-" + str(n) + ".png")
+            path = os.path.join(OUT, name)
+            if path not in _CLAIMED and not os.path.exists(path):
+                _CLAIMED.add(path)
+                return name, path
+            n += 1
+
+
+def _under(root, path):
+    """path 是否真在 root 里（先解析符号链接再比较）。
+
+    原来的 `fp.startswith(OUT + os.sep)` 有两个坑：MOSS_OUT 带尾斜杠时前缀永远
+    不匹配（所有图片 404），OUT 下的符号链接还能把任意文件读出去。
+    """
+    root_real = os.path.realpath(root)
+    prefix = root_real if root_real == os.sep else root_real + os.sep
+    return os.path.realpath(path).startswith(prefix)
+
+
+def _busy_count():
+    """在跑 + 排队的任务数（排队上限用）。"""
+    with JOBS_LOCK:
+        return sum(1 for j in JOBS.values() if j.get("status") in ("running", "queued"))
+
+
+def _int_field(p, key, default, lo, hi):
+    """取整数字段，非法返回 (None, 中文原因)。
+
+    原来是裸 int(p["width"])：传 "abc" 直接抛 ValueError，连接被掐断，
+    前端只看到 SyntaxError。现在统一 400 + 原因。
+    """
+    v = p.get(key)
+    if v in (None, ""):
+        return default, None
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None, key + " 必须是整数"
+    if n < lo or n > hi:
+        return None, "%s 必须在 %d~%d 之间" % (key, lo, hi)
+    return n, None
+
+
+def _float_field(p, key, default, lo, hi):
+    v = p.get(key)
+    if v in (None, ""):
+        return default, None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None, key + " 必须是数字"
+    if f < lo or f > hi:
+        return None, "%s 必须在 %g~%g 之间" % (key, lo, hi)
+    return f, None
 
 
 def _read_swap():
@@ -466,97 +579,8 @@ def _prune_jobs():
             JOBS.pop(k, None)
 
 
-def _write_meta(img_path, meta):
-    """在图片旁写同名 .json，记录本次的完整生成参数，便于日后复现/对比。
-    失败不影响出图（老图没有快照是正常的），静默忽略。"""
-    try:
-        p = os.path.splitext(img_path)[0] + ".json"
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=1)
-    except Exception:
-        pass
-
-
-# ── PNG 无损重压（oxipng）────────────────────────────────────────────────
-# 生成/超分出来的图动辄 20–55MB。PNG 本身无损，重压不碰任何像素，只是把
-# filter 组合和 deflate 重新选一遍：实测 8192² 省 15%、4096² 省 6%、噪点多的省 14%。
-# pyoxipng 的 wheel 装在 web/_pylibs（不动系统 Python），缺了就静默跳过。
-sys.path.insert(0, os.path.join(BASE, "_pylibs"))
-try:
-    import oxipng as _oxi
-except Exception:
-    _oxi = None
-_PNG_OPT_LEVEL = int(os.environ.get("MOSS_PNG_OPT", "2") or 0)
-_OPT_LOCK = threading.Lock()
-_OPT_BUSY = set()
-
-
-def _optimize_png(path, level=None):
-    """无损重压一个 PNG，返回 (before, after)；失败/无收益返回 None。
-
-    保留原 mtime —— 历史列表按 mtime 排序，不保留会把压缩过的图全顶到最前面。
-    """
-    if _oxi is None:
-        return None
-    level = _PNG_OPT_LEVEL if level is None else level
-    if level <= 0 or not path.lower().endswith(".png") or not os.path.isfile(path):
-        return None
-    tmp = path + ".opt"
-    try:
-        st = os.stat(path)
-        before = st.st_size
-        with open(path, "rb") as f:
-            data = f.read()
-        out = _oxi.optimize_from_memory(data, level=level)
-        if len(out) >= before:
-            return (before, before)
-        with open(tmp, "wb") as f:
-            f.write(out)
-        os.replace(tmp, path)
-        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
-        return (before, len(out))
-    except Exception:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-        return None
-
-
-def _optimize_async(path):
-    """后台线程压缩：8192² 的图要 70–80s，不该让任务完成状态等它。"""
-    if _oxi is None or _PNG_OPT_LEVEL <= 0:
-        return
-    with _OPT_LOCK:
-        if path in _OPT_BUSY:
-            return
-        _OPT_BUSY.add(path)
-
-    def work():
-        try:
-            res = _optimize_png(path)
-            if res and res[1] < res[0]:
-                meta = _read_meta(path)
-                if isinstance(meta, dict):
-                    meta["size"] = res[1]
-                    meta["opt"] = {"before": res[0], "after": res[1],
-                                   "level": _PNG_OPT_LEVEL}
-                    _write_meta(path, meta)
-        finally:
-            with _OPT_LOCK:
-                _OPT_BUSY.discard(path)
-
-    threading.Thread(target=work, daemon=True).start()
-
-
-def _read_meta(img_path):
-    """读同名 .json 快照；没有或坏了返回 None。"""
-    try:
-        p = os.path.splitext(img_path)[0] + ".json"
-        with open(p, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+# 参数快照（_write_meta/_read_meta）与 PNG 无损重压（_optimize_png/_optimize_async）
+# 都在 pngtools.py 里：compress_history.py 要复用它们，但不该 import 本模块。
 
 
 def _patch(job_id, **kw):
@@ -566,6 +590,15 @@ def _patch(job_id, **kw):
 
 ENH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_enhance.py")
 
+# 每个任务的临时目录：提示词 / embeds 这些中间文件以前直接落在输出目录里
+# （.prompt-<id>.txt、.embeds-<id>.safetensors 只在 finally 删了 embeds），
+# 现在放系统临时目录，任务结束整目录删除。
+_TMPDIRS = {}
+
+
+def _jobdir(p):
+    return _TMPDIRS[p["id"]]
+
 
 def _enhance_prompt(p, job_id, log):
     """用本地 Qwen3.5-9B（与 text encoder 同一份权重）强化提示词。
@@ -573,8 +606,9 @@ def _enhance_prompt(p, job_id, log):
     成功返回新 prompt；失败返回 None，调用方回退原文。增强在 DiT 加载前完成，
     两者不同时驻留，所以不额外占内存。
     """
-    src = os.path.join(OUT, ".prompt-" + p["id"] + ".txt")
-    dst = os.path.join(OUT, ".prompt-" + p["id"] + ".enhanced.txt")
+    # 中间文件放任务临时目录（run_job 建的），不再往 ~/Pictures/MOSS-Image 里丢
+    src = os.path.join(_jobdir(p), "prompt.txt")
+    dst = os.path.join(_jobdir(p), "prompt.enhanced.txt")
     with open(src, "w", encoding="utf-8") as f:
         f.write(p["prompt"])
     cmd = [PY, ENH, "--prompt-file", src,
@@ -600,6 +634,9 @@ def build_mlx(p, outfile):
     """
     env = dict(os.environ)
     base = [MFLUX024_PY, RUNNER,
+            # 显式传模型目录：runner 侧的默认值只看 MOSS_MODEL（单数）+ 仓库内路径，
+            # MOSS_MODELS 指到别处时两个引擎会读到不同权重。
+            "--model", MLX8,
             "--negative", p.get("negative") or "",
             "--steps", str(p["steps"]), "--guidance", str(p["cfg"]),
             "--width", str(p["width"]), "--height", str(p["height"]),
@@ -621,7 +658,12 @@ def build_mlx(p, outfile):
         # 档位里的 skip_cos 必须能生效：前端没传时回退到档位值，再回退到 0.972。
         # （之前只在 p["skip_mode"]=="adaptive" 时才传，导致档位配的 0.975 被 CLI 默认值盖掉）
         _smode = p.get("skip_mode") or _mode.get("skip_mode") or "adaptive"
-        if _smode == "adaptive":
+        if _smode == "uniform":
+            # 界面上的「均匀跳步」= 旧 mlx_runner 的 uniform = 0.24 CLI 的 fixed。
+            # 这里不翻译的话，uniform 落到 argparse 默认值 adaptive：
+            # 用户选「均匀」实际跑的是自适应（静默换语义）。
+            base += ["--skip-mode", "fixed"]
+        elif _smode == "adaptive":
             _scos = p.get("skip_cos")
             if _scos is None:
                 _scos = _mode.get("skip_cos", 0.972)
@@ -642,8 +684,8 @@ def build_mlx(p, outfile):
         # runner 侧：--lora 逗号分隔；--lora-scale 单值广播或等长列表
         base += ["--lora", ",".join(loras), "--lora-scale", ",".join(scales)]
     if p.get("two_stage"):
-        emb = os.path.join(OUT, ".embeds-" + p["id"] + ".safetensors")
-        enc = [MFLUX024_PY, RUNNER, "--stage", "encode",
+        emb = os.path.join(_jobdir(p), "embeds.safetensors")
+        enc = [MFLUX024_PY, RUNNER, "--model", MLX8, "--stage", "encode",
                "--prompt-file", _write_prompt_file(p),
                "--negative", p.get("negative") or "",
                "--guidance", str(p["cfg"]), "--embeds", emb,
@@ -689,7 +731,7 @@ def build_msmlx(p, outfile):
 
 def _write_prompt_file(p):
     """提示词可能很长（Layout JSON），走文件而不是命令行参数，避开 argv 长度与引号坑。"""
-    path = os.path.join(OUT, ".prompt-" + p["id"] + ".run.txt")
+    path = os.path.join(_jobdir(p), "prompt.run.txt")
     with open(path, "w", encoding="utf-8") as f:
         f.write(p["prompt"])
     return path
@@ -700,22 +742,48 @@ def _stream(cmd, env, job_id, log, quiet=False):
 
     quiet=True 给 SeedVR2：它的 CLI 中途不打进度行（只在结束时打一行内存统计），
     所以只把输出留进 log 供排错，不解析、也不覆盖已设好的 phase。
+
+    读循环带空闲超时（MOSS_STREAM_IDLE，默认 1800s）：子进程卡死时不再永久占着
+    GPU_LOCK 与任务（原来 os.read 会一直阻塞）。Popen 失败时两个 pty fd 都关。
     """
     import pty
+    idle = float(os.environ.get("MOSS_STREAM_IDLE", "1800") or 0)
     master, slave = pty.openpty()
-    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=slave,
-                            stderr=slave, env=env)
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=slave,
+                                stderr=slave, env=env)
+    except Exception:
+        # Popen 抛异常时 slave 还没关（原来只关 master，泄漏两个 fd 之一）
+        os.close(slave)
+        os.close(master)
+        raise
     os.close(slave)
     _patch(job_id, pid=proc.pid)
     buf = b""
+    last = time.time()
+    timed_out = False
     try:
         while True:
+            if idle > 0:
+                ready, _, _ = select.select([master], [], [], 5.0)
+                if not ready:
+                    if time.time() - last > idle:
+                        timed_out = True
+                        log.append("超时：连续 %g 秒无输出，已终止子进程（MOSS_STREAM_IDLE 可调）"
+                                   % idle)
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        break
+                    continue
             try:
                 chunk = os.read(master, 8192)
             except OSError:
                 break
             if not chunk:
                 break
+            last = time.time()
             buf += chunk
             while True:
                 idx = [i for i in (buf.find(b"\r"), buf.find(b"\n")) if i >= 0]
@@ -755,15 +823,30 @@ def _stream(cmd, env, job_id, log, quiet=False):
             os.close(master)
         except Exception:
             pass
-    proc.wait()
-    return proc.returncode
+    # wait 也加超时：被 kill 的子进程理论上马上退，但不能再无限等
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+    return -1 if timed_out else proc.returncode
 
 
 def run_job(job_id, p):
     outfile = os.path.join(OUT, p["filename"])
     log = []
-    emb = os.path.join(OUT, ".embeds-" + p["id"] + ".safetensors")
+    # 本任务的中间文件目录（提示词 / embeds），finally 整目录删除
+    _TMPDIRS[job_id] = tempfile.mkdtemp(prefix="moss-" + p["id"] + "-")
     with GPU_LOCK:
+        # 排队期间被取消的任务不该再起进程
+        if JOBS[job_id].get("cancelled"):
+            _TMPDIRS.pop(job_id, None)
+            with _PATH_LOCK:
+                _CLAIMED.discard(outfile)
+            return
         _patch(job_id, status="running", started=time.time(), phase="加载")
         try:
             if p.get("enhance"):
@@ -782,6 +865,8 @@ def run_job(job_id, p):
                 _patch(job_id, phase=label)
                 rc = _stream(cmd, env, job_id, log)
                 if rc != 0:
+                    if JOBS[job_id].get("cancelled"):
+                        return          # 用户手动取消，error 文案已经在 _post_cancel 里写好
                     _patch(job_id, status="error", phase="error",
                            error="\n".join(log[-12:]) or ("stage " + label + " rc=" + str(rc)))
                     return
@@ -832,11 +917,12 @@ def run_job(job_id, p):
             _patch(job_id, status="error", error=repr(e))
         finally:
             _patch(job_id, pid=None)
-            for junk in (emb, emb + ".skip"):
-                try:
-                    os.remove(junk)
-                except OSError:
-                    pass
+            # 整个临时目录一起删（原来只删 embeds，.prompt-*.txt 永久残留在输出目录）
+            _tmp = _TMPDIRS.pop(job_id, None)
+            if _tmp:
+                shutil.rmtree(_tmp, ignore_errors=True)
+            with _PATH_LOCK:
+                _CLAIMED.discard(outfile)
 
 
 def run_upscale_job(job_id, p):
@@ -893,6 +979,8 @@ def run_upscale_job(job_id, p):
                "--model", p["model"], "--tile", "512", "--overlap", "32"]
     log = []
     with GPU_LOCK:
+        if JOBS[job_id].get("cancelled"):     # 排队期间被取消
+            return
         _patch(job_id, status="running", started=time.time(),
                phase="重绘" if seedvr2 else "加载")
         try:
@@ -990,8 +1078,9 @@ class H(BaseHTTPRequestHandler):
                 "upscale_models": [{"id": k, "label": v["label"], "note": v["note"],
                                     "group": v.get("group", ""),
                                     "engine": v.get("engine", "spandrel"),
-                                    "ok": (bool(SEEDVR2_CLI) if v.get("engine") == "seedvr2"
-                                           else SR.weight_ok(k))}
+                                    # 可用性要连 pysafe/执行器一起查：只查权重时，
+                                    # 干净 clone 里四路超分全挂、UI 却仍报可用。
+                                    "ok": _upscale_ok(k, v)}
                                    for k, v in UPSCALE_MODELS.items()],
                 "upscale_groups": UPSCALE_GROUPS,
                 "default_upscale": DEFAULT_UPSCALE,
@@ -1000,7 +1089,8 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/api/sys":
             return self._json(sys_sample())
         if u.path == "/api/job":
-            jid = unquote(u.query.replace("id=", ""))
+            # 原来的 replace("id=", "") 把 "?id=abc&x=1" 整串当 id → 永远 404
+            jid = (parse_qs(u.query).get("id") or [""])[0]
             with JOBS_LOCK:
                 j = JOBS.get(jid)
             return self._json(j or {"error": "not found"}, 200 if j else 404)
@@ -1051,14 +1141,14 @@ class H(BaseHTTPRequestHandler):
         if u.path.startswith("/out/"):
             rest = unquote(u.path[5:])
             fp = os.path.normpath(os.path.join(OUT, rest))
-            if fp.startswith(OUT + os.sep) and os.path.isfile(fp):
+            if _under(OUT, fp) and os.path.isfile(fp):
                 return self._raw(fp, "image/png")
         if u.path.startswith("/thumb/"):
             # 图库缩略图：原图动辄 0.7 MB（最大 51 MB），直接塞进 148px 的格子
             # 既慢又费内存。这里按需生成 148px JPEG（约 10 KB）并落盘缓存。
             rest = unquote(u.path[7:])
             fp = os.path.normpath(os.path.join(OUT, rest))
-            if fp.startswith(OUT + os.sep) and os.path.isfile(fp):
+            if _under(OUT, fp) and os.path.isfile(fp):
                 tp = _thumb_path(fp, 148)
                 if tp and os.path.isfile(tp):
                     return self._raw(tp, "image/jpeg")
@@ -1070,7 +1160,7 @@ class H(BaseHTTPRequestHandler):
         if u.path.startswith("/api/out/"):
             rest = unquote(u.path[len("/api/out/"):])
             fp = os.path.normpath(os.path.join(OUT, rest))
-            if fp.startswith(OUT + os.sep) and os.path.isfile(fp):
+            if _under(OUT, fp) and os.path.isfile(fp):
                 # 先清缩略图缓存（它按 路径+mtime 命名，文件删了就再也命中不到）
                 try:
                     key = hashlib.md5(("%s|%d|%d" % (fp, os.path.getmtime(fp), 148)).encode()).hexdigest()
@@ -1084,12 +1174,78 @@ class H(BaseHTTPRequestHandler):
             return self._json({"error": "not found"}, 404)
         self._json({"error": "not found"}, 404)
 
-    def _post_upscale(self):
-        n = int(self.headers.get("Content-Length", 0))
+    def _write_guard(self):
+        """写入类接口（generate / upscale / cancel）的跨站防护。
+
+        /api/generate 与 /api/upscale 能起 13 GB 级任务，原来既不校验 Origin 也不看
+        Content-Type：任意网页一个简单 POST（表单 / text-plain）就能触发。
+        浏览器对 application/json 的跨站请求必须先发预检，而本服务不实现 OPTIONS，
+        所以「Origin 同源 + Content-Type 是 json」合起来就挡住了跨站简单请求。
+        返回 None 表示通过，否则返回原因。
+        """
+        origin = self.headers.get("Origin")
+        if origin:
+            port = self.server.server_port
+            allowed = set()
+            for host in ("127.0.0.1", "localhost", "[::1]"):
+                for scheme in ("http", "https"):
+                    allowed.add("%s://%s:%d" % (scheme, host, port))
+            if origin not in allowed:
+                return "forbidden：Origin 不是本机工作台"
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return "forbidden：Content-Type 必须是 application/json"
+        return None
+
+    def _read_json(self):
+        """读请求体，返回 (dict, 错误文案)。"""
         try:
-            p = json.loads(self.rfile.read(n) or b"{}")
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        try:
+            return json.loads(self.rfile.read(n) or b"{}"), None
         except Exception:
-            return self._json({"error": "bad json"}, 400)
+            return None, "bad json"
+
+    def _post_cancel(self):
+        """取消一个任务：kill 记录的子进程并把任务置成 error。
+
+        原来没有任何取消入口，_stream 也没有超时，卡住的任务只能把整个服务杀掉。
+        """
+        err = self._write_guard()
+        if err:
+            return self._json({"error": err}, 403)
+        p, bad = self._read_json()
+        if bad:
+            return self._json({"error": bad}, 400)
+        jid = (p or {}).get("id") or ""
+        with JOBS_LOCK:
+            j = JOBS.get(jid)
+            if not j:
+                return self._json({"error": "not found"}, 404)
+            pid = j.get("pid")
+            j.update(status="error", phase="error", pid=None, cancelled=True,
+                     error="已取消（用户手动停止）")
+        killed = False
+        if pid:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                killed = True
+            except Exception:
+                pass
+        return self._json({"ok": True, "id": jid, "killed": killed})
+
+    def _post_upscale(self):
+        err = self._write_guard()
+        if err:
+            return self._json({"error": err}, 403)
+        if MAX_QUEUE > 0 and _busy_count() >= MAX_QUEUE:
+            return self._json({"error": "队列已满（%d 个任务在跑或排队），等一会儿再提交"
+                                        % MAX_QUEUE}, 429)
+        p, bad = self._read_json()
+        if bad:
+            return self._json({"error": bad}, 400)
         sub = p.get("sub") or ""
         srcdir = UPSCALE_DIR if sub == "upscaled" else OUT
         src = os.path.basename(p.get("name") or "")
@@ -1102,10 +1258,15 @@ class H(BaseHTTPRequestHandler):
         if mdef.get("engine") == "seedvr2":
             if not SEEDVR2_CLI:
                 return self._json({"error": "SeedVR2 未就绪（PATH 里找不到 mflux-upscale-seedvr2）"}, 500)
-        elif not (os.path.isfile(UPSCALE_RUNNER) and os.path.isfile(PYSAFE)):
-            return self._json({"error": "超分执行器未就绪（缺 upscale_runner.py 或 pysafe）"}, 500)
-        elif not (weights and os.path.isfile(weights)):
-            return self._json({"error": "权重缺失：" + str(weights)}, 500)
+        else:
+            # 三个走 pysafe 的引擎各有自己的 runner；原来一律查 upscale_runner.py，
+            # mewzoom/thera 缺执行器时会以一句看不懂的报错失败。
+            runner = _upscale_runner(mdef)
+            if not (os.path.isfile(runner) and os.path.isfile(PYSAFE)):
+                return self._json({"error": "超分执行器未就绪（缺 %s 或 pysafe）"
+                                            % os.path.basename(runner)}, 500)
+            if not (weights and os.path.isfile(weights)):
+                return self._json({"error": "权重缺失：" + str(weights)}, 500)
 
         base = os.path.splitext(src)[0]
         topic = base.rsplit("_", 1)[0] if "_" in base else base
@@ -1127,20 +1288,31 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         _touch()
         u = urlparse(self.path)
+        if u.path == "/api/cancel":
+            return self._post_cancel()
         if u.path == "/api/upscale":
             return self._post_upscale()
         if u.path != "/api/generate":
             return self._json({"error": "not found"}, 404)
-        n = int(self.headers.get("Content-Length", 0))
-        try:
-            p = json.loads(self.rfile.read(n) or b"{}")
-        except Exception:
-            return self._json({"error": "bad json"}, 400)
+        err = self._write_guard()
+        if err:
+            return self._json({"error": err}, 403)
+        if MAX_QUEUE > 0 and _busy_count() >= MAX_QUEUE:
+            return self._json({"error": "队列已满（%d 个任务在跑或排队），等一会儿再提交"
+                                        % MAX_QUEUE}, 429)
+        p, bad = self._read_json()
+        if bad:
+            return self._json({"error": bad}, 400)
         prompt = (p.get("prompt") or "").strip()
         if not prompt:
             return self._json({"error": "prompt empty"}, 400)
-        w = int(p.get("width") or 640)
-        h = int(p.get("height") or 480)
+        # 裸 int() 遇到 "abc" 会抛 ValueError、连接被掐断，前端只看到 SyntaxError
+        w, err = _int_field(p, "width", 640, 64, 4096)
+        if err:
+            return self._json({"error": err}, 400)
+        h, err = _int_field(p, "height", 480, 64, 4096)
+        if err:
+            return self._json({"error": err}, 400)
         if w % 16 or h % 16:
             return self._json({"error": "width/height 必须是 16 的倍数"}, 400)
         engine = p.get("engine") or DEFAULT_ENGINE
@@ -1155,11 +1327,21 @@ class H(BaseHTTPRequestHandler):
             return self._json({"error": "unknown engine"}, 400)
         if not ENGINES[engine].get("available", True):
             return self._json({"error": ENGINES[engine]["note"]}, 400)
+        # 权重预检：tier 目录不在时与其等 runner 崩在加载阶段，不如当场 400 并给出修复提示
+        # （MOSS_MODELS 指错是最常见的原因）
+        if engine == "mlx8" and not os.path.isdir(os.path.join(MLX8, "transformer")):
+            return self._json({"error": "mlx8 引擎缺权重：%s 不存在。跑 scripts/download_models.py，"
+                                        "或用 MOSS_MODELS 指向模型目录"
+                                        % os.path.join(MLX8, "transformer")}, 400)
         # steps/cfg：用户显式传了就用用户的，否则用档位默认。不再静默覆盖。
         mode = LORA_MODES[lora_mode]
-        # 步数可被前端显式覆盖（工作台支持自由调节）；夹到 1..200 防手滑
-        steps = max(1, min(200, int(p["steps"]))) if p.get("steps") else mode["steps"]
-        cfg = float(p["cfg"]) if p.get("cfg") is not None else mode["cfg"]
+        # 步数可被前端显式覆盖（工作台支持自由调节）
+        steps, err = _int_field(p, "steps", mode["steps"], 1, 200)
+        if err:
+            return self._json({"error": err}, 400)
+        cfg, err = _float_field(p, "cfg", mode["cfg"], 0.0, 20.0)
+        if err:
+            return self._json({"error": err}, 400)
         # 跳步：auto/缺省 = 跟随档位；显式数值 = 用户覆盖。夹到 0~0.6，
         # 且只有 steps>=10 才在 runner 侧生效（4/8 步蒸馏档传了也不跳）。
         _skip_in = p.get("skip")
@@ -1176,13 +1358,21 @@ class H(BaseHTTPRequestHandler):
                 skip = max(0.0, min(0.6, float(_skip_in)))
             except (TypeError, ValueError):
                 skip = float(mode.get("skip") or 0.0)
+            # 显式比例 = 均匀/固定跳步。这里必须写死 uniform：build_mlx 会把它翻译成
+            # CLI 的 --skip-mode fixed，不写就会落到 argparse 默认的 adaptive。
+            skip_mode = "uniform"
         # seed=random 时当场摇一个真随机值：以前是 None 一路兜底成 42，
         # 导致同 prompt 连拍全是同一张、快照里也全是 42。
         # 摇完写进 job，快照记录实际用的种子（拿它就能复现），
         # seed_requested 保留 random 标记用于区分"用户指定"和"系统摇的"。
         seed_in = p.get("seed")
         seed_random = seed_in in (None, "", "random")
-        seed = random.randint(1, 2 ** 31 - 1) if seed_random else int(seed_in)
+        if seed_random:
+            seed = random.randint(1, 2 ** 31 - 1)
+        else:
+            seed, err = _int_field(p, "seed", 42, 0, 2 ** 63 - 1)
+            if err:
+                return self._json({"error": err}, 400)
         topic = make_topic(prompt)
         filename, outpath = unique_path(topic)
         jid = uuid.uuid4().hex[:12]
@@ -1245,6 +1435,8 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # token 只在真正跑服务时落盘：import app 的脚本（compress_history.py）不该产生副作用
+    _write_token_file()
     # 端口统一：MOSS_PORT 优先（.command / 壳都读它），其次兼容旧的 PORT
     port = int(os.environ.get("MOSS_PORT") or os.environ.get("PORT") or "7860")
     print("MOSS-Image workbench -> http://127.0.0.1:" + str(port), flush=True)

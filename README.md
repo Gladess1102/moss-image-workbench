@@ -75,7 +75,10 @@ MOSS-Image 是 5B DiT + 9B 文本编码器的双语生图模型。官方管线�
     ./run.sh                # http://127.0.0.1:7860
 
 - 默认下载 compact tier（约 8 GB）+ 4 步蒸馏 LoRA（1.2 GB）；24 GB+ 用参数 --tier 8bit
-  拉高画质档，--no-4step 可跳过 LoRA（默认档会自动回落到 20 步）。
+  拉高画质档，--no-4step 可跳过 LoRA（默认档会自动回落到 20 步）。这两个参数由 install.sh
+  透传给 scripts/download_models.py。
+- 桌面壳（可选）：`python3 -m pip install -r requirements-desktop.txt`，然后 `python3 web/desktop.py`
+  —— WKWebView 承载同一页面，关窗即清理推理进程。
 - 只支持 macOS + Apple Silicon，这是 MLX/Metal 的硬约束。
 
 ## 档位一览

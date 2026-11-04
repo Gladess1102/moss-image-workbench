@@ -76,17 +76,31 @@ def wait_for_server(timeout=30):
     return False
 
 
-def call_shutdown():
+def _server_pid(timeout=2.0):
+    """问 /api/health 要服务进程 pid：token 文件名带 pid，壳按它去读。
+
+    2026-11-04：token 文件原来是固定的 /tmp/moss-shutdown.token，两个实例会互相覆盖。
+    """
+    try:
+        with urllib.request.urlopen(URL + "/api/health", timeout=timeout) as r:
+            return int(json.loads(r.read().decode("utf-8", "replace")).get("pid") or 0)
+    except Exception:
+        return 0
+
+
+def call_shutdown(pid=None):
     """请服务端自行收尾（杀推理子进程后退出）。超时/失败都不影响后续兜底。
 
     2026-10-24：/api/shutdown 加了 token（原来是无鉴权 GET，任意网页一行 img 标签
-    就能杀掉服务和在跑的任务）。token 由 app.py 启动时写到本地文件。
+    就能杀掉服务和在跑的任务）。token 由 app.py 启动时写到 /tmp/moss-shutdown-<pid>.token。
     """
     try:
         tok = ""
         try:
-            with open("/tmp/moss-shutdown.token", encoding="utf-8") as f:
-                tok = f.read().strip()
+            _pid = pid or _server_pid()
+            if _pid:
+                with open("/tmp/moss-shutdown-%d.token" % int(_pid), encoding="utf-8") as f:
+                    tok = f.read().strip()
         except OSError:
             pass
         # token 走 header：避免出现在 ps aux 的 argv 里（P1-9）
@@ -180,7 +194,7 @@ class Server:
             if self.proc is None:
                 return
             if self.proc.poll() is None:
-                call_shutdown()
+                call_shutdown(self.proc.pid)
                 try:
                     self.proc.wait(timeout=5)
                 except Exception:

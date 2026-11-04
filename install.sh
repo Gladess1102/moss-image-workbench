@@ -3,16 +3,25 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PY="$PYTHON"
-if [ -z "$PY" ]; then PY=python3; fi
+# set -u 下裸写 "$PYTHON" 会直接 unbound variable 退出（干净 shell 里第一行就崩，
+# 下面那个 if 回落永远到不了）
+PY="${PYTHON:-python3}"
 WITH_MSMLX=0
 NO_MODELS=0
-for arg in "$@"; do
-  case "$arg" in
+NO_4STEP=0
+TIER=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --with-msmlx) WITH_MSMLX=1 ;;
     --no-models)  NO_MODELS=1 ;;
-    *) echo "unknown option: $arg"; exit 1 ;;
+    --no-4step)   NO_4STEP=1 ;;
+    --tier)
+      [ $# -ge 2 ] || { echo "--tier 需要一个值（compact|8bit）"; exit 1; }
+      TIER="$2"; shift ;;
+    --tier=*)     TIER="${1#--tier=}" ;;
+    *) echo "unknown option: $1"; exit 1 ;;
   esac
+  shift
 done
 
 echo "==> Python: $("$PY" -V)"
@@ -41,10 +50,19 @@ fi
 
 if [ "$NO_MODELS" = "0" ]; then
   echo "==> 下载模型（约 8 GB，可中断重跑）"
-  .venv-mflux/bin/python scripts/download_models.py
+  # --tier / --no-4step 透传给下载脚本（README 一直是这么写的，之前这里不认）
+  DL_ARGS=""
+  if [ -n "$TIER" ]; then DL_ARGS="--tier $TIER"; fi
+  if [ "$NO_4STEP" = "1" ]; then DL_ARGS="$DL_ARGS --no-4step"; fi
+  # shellcheck disable=SC2086  # 有意按空格拆分：只可能是 "--tier 8bit" / "--no-4step"
+  .venv-mflux/bin/python scripts/download_models.py $DL_ARGS
 fi
 
 echo
 echo "==> 完成。启动工作台："
 echo "    ./run.sh"
 echo "首次启动前建议先跑：.venv-mflux/bin/python scripts/doctor.py"
+echo
+echo "可选：桌面壳（WKWebView，关窗即清理推理进程）"
+echo "    python3 -m pip install -r requirements-desktop.txt"
+echo "    python3 web/desktop.py"

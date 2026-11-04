@@ -26,9 +26,21 @@ jobs:
       - name: 必需文件齐全
         run: |
           for f in README.md README.en.md LICENSE NOTICE install.sh run.sh \
+                   tools/pysafe \
                    web/app.py web/index.html scripts/download_models.py scripts/doctor.py; do
             test -f "$f" || { echo "missing: $f"; exit 1; }
           done
+
+      - name: install.sh 能跑到平台检查（干净 shell 下不能 unbound variable 崩）
+        run: |
+          bash -n install.sh
+          set +e
+          bash install.sh --tier 8bit --no-4step > install.log 2>&1
+          rc=$?
+          set -e
+          cat install.log
+          test "$rc" -ne 0
+          grep -q "只支持 macOS" install.log
 
       - name: doctor 可执行（缺权重时应干净报错而不是崩）
         run: python scripts/doctor.py || true
