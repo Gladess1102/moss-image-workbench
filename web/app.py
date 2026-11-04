@@ -810,10 +810,20 @@ def _stream(cmd, env, job_id, log, quiet=False):
                 m = RE_MLX.search(line)
                 if m:
                     cur, total, per = int(m.group(1)), int(m.group(2)), float(m.group(3))
-                    _patch(job_id, progress=round(cur / total * 100, 1),
-                           step=str(cur) + "/" + str(total),
-                           sec_per_step=per, eta=round((total - cur) * per),
-                           phase="去噪")
+                    # 回灌自开发版（2026-11-02）：实测某次 2000×1120/50 步的大任务，
+                    # 全程解析出的 per 都是 0.0（同一份代码、同一套参数的小图却正常），
+                    # 前端整场只显示「已用 Ns」，既没有 s/步 也没有剩余时间。
+                    # per 不可信时不覆盖上一次有效值，用已知值继续估 ETA；
+                    # 一次都没拿到过就不写，让前端走"已用"分支。
+                    with JOBS_LOCK:
+                        known = (JOBS.get(job_id) or {}).get("sec_per_step") or 0.0
+                    use_per = per if per > 0 else known
+                    upd = dict(progress=round(cur / total * 100, 1),
+                               step=str(cur) + "/" + str(total), phase="去噪")
+                    if use_per > 0:
+                        upd["sec_per_step"] = use_per
+                        upd["eta"] = round((total - cur) * use_per)
+                    _patch(job_id, **upd)
                 elif "文本编码完成" in line or "embeds" in line:
                     _patch(job_id, phase="编码")
                 elif "去噪完成" in line:
@@ -906,6 +916,7 @@ def run_job(job_id, p):
                     "seed_requested": p.get("seed_requested"),
                     "width": w, "height": h,
                     "two_stage": bool(p.get("two_stage")),
+                    "stream": bool(p.get("stream")),
                     "elapsed": elapsed,
                     "size": os.path.getsize(outfile),
                 })
@@ -1421,6 +1432,10 @@ class H(BaseHTTPRequestHandler):
             # 2026-10-24 事故：复用 msmlx 任务的历史参数把 mlx8 也切成单进程，
             # 峰值 13G、swap 14.7G、所有任务慢 2-3 倍。所以这里不再读前端值。
             "two_stage": engine == "mlx8",
+            # DiT 按层流式加载：只有 mlx8（build_mlx → --stream）有这条路径，
+            # msmlx 自己分阶段释放 TE/DiT/VAE。记进 job 和 .json 快照，
+            # 否则事后翻快照看不出这张图当时到底是不是流式跑的。
+            "stream": bool(p.get("stream", True)) if engine == "mlx8" else False,
             "turbo": bool(LORA_MODES[lora_mode].get("turbo")),
             # 提示词强化（本地 Qwen3.5-9B，在锁内、DiT 加载前跑）
             "enhance": bool(p.get("enhance")),

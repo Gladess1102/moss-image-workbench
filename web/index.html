@@ -797,7 +797,7 @@ function pollJob(){
     if(j.error&&j.status===undefined) return;
     $('pbar').style.width=(j.progress||0)+'%';
     const ph={排队:'排队中',加载:'模型加载中…',编码:'文本编码中',去噪:'去噪采样中',解码:'VAE 解码中',超分:'超分中',重绘:'生成式重绘中',done:'完成',error:'失败'}[j.phase]||j.phase;
-    $('pPhase').innerHTML=`<b>${ph}</b>${j.step?' · '+j.step:''}${j.sec_per_step?' · '+j.sec_per_step.toFixed(1)+'s/步':''}`;
+    $('pPhase').innerHTML=`<b>${ph}</b>${j.step?' · '+j.step:''}${j.sec_per_step?' · '+j.sec_per_step.toFixed(1)+'s/步':''}${j.stream?' · 流式':''}`;
     /* SeedVR2 没有分块进度，但它有真实的已用时长——照实显示，不编造百分比 */
     if(j.status==='running' && j.started && !j.eta){
       $('pEta').textContent='已用 '+Math.round(Date.now()/1000-j.started)+'s';
@@ -906,7 +906,9 @@ function openLb(f){
       (m.lora_scale!=null?' · LoRA '+m.lora_scale:'')+
       (m.char_lora?' · 角色 '+m.char_lora.replace(/\.safetensors$/,'')+'@'+(m.char_lora_scale!=null?m.char_lora_scale:1):'')+
       ' · 种子 '+(m.seed==null?'?':m.seed)+
-      ' · '+m.width+'×'+m.height+(m.elapsed?' · '+m.elapsed+'s':'');
+      ' · '+m.width+'×'+m.height+(m.elapsed?' · '+m.elapsed+'s':'')+
+      /* 早于 2026-11-02 的快照没有 stream 字段，不硬猜成"关" */
+      (m.stream===true?' · 流式加载':(m.stream===false?' · 整模加载':''));
   }else if(m && m.type==='upscale'){
     info+='<br><span style="color:var(--acc)">超分</span> '+(m.model_label||m.model)+' ×'+m.scale+
       ' ← '+(m.source||'')+' · '+m.width+'×'+m.height+(m.elapsed?' · '+m.elapsed+'s':'');
