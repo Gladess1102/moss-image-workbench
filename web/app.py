@@ -1169,6 +1169,10 @@ class H(BaseHTTPRequestHandler):
     def do_DELETE(self):
         u = urlparse(self.path)
         if u.path.startswith("/api/out/"):
+            # 删除也是写操作：跨站来源一律拒。DELETE 没有请求体，故只校验 Origin。
+            err = self._write_guard(need_json=False)
+            if err:
+                return self._json({"error": err}, 403)
             rest = unquote(u.path[len("/api/out/"):])
             fp = os.path.normpath(os.path.join(OUT, rest))
             if _under(OUT, fp) and os.path.isfile(fp):
@@ -1185,13 +1189,14 @@ class H(BaseHTTPRequestHandler):
             return self._json({"error": "not found"}, 404)
         self._json({"error": "not found"}, 404)
 
-    def _write_guard(self):
-        """写入类接口（generate / upscale / cancel）的跨站防护。
+    def _write_guard(self, need_json=True):
+        """写入类接口（generate / upscale / cancel / DELETE）的跨站防护。
 
         /api/generate 与 /api/upscale 能起 13 GB 级任务，原来既不校验 Origin 也不看
         Content-Type：任意网页一个简单 POST（表单 / text-plain）就能触发。
         浏览器对 application/json 的跨站请求必须先发预检，而本服务不实现 OPTIONS，
         所以「Origin 同源 + Content-Type 是 json」合起来就挡住了跨站简单请求。
+        need_json=False 给 DELETE：它没有请求体，只校验 Origin。
         返回 None 表示通过，否则返回原因。
         """
         origin = self.headers.get("Origin")
@@ -1203,6 +1208,8 @@ class H(BaseHTTPRequestHandler):
                     allowed.add("%s://%s:%d" % (scheme, host, port))
             if origin not in allowed:
                 return "forbidden：Origin 不是本机工作台"
+        if not need_json:
+            return None
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":
             return "forbidden：Content-Type 必须是 application/json"
