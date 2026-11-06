@@ -54,6 +54,7 @@ def main():
     print("模型就绪 %.1fs · %s · x%d · %.2fM" % (
         time.time() - t0, dev.type, scale,
         sum(p.numel() for p in model.parameters()) / 1e6), flush=True)
+    print("PHASE load %.2f" % (time.time() - t0), flush=True)
 
     src = Image.open(a.src).convert("RGB")
     w, h = src.size
@@ -68,6 +69,7 @@ def main():
     o = out.squeeze(0).clamp(0, 1).permute(1, 2, 0).cpu().numpy()
     oh, ow = int(o.shape[0]), int(o.shape[1])
     Image.fromarray((o * 255.0).round().astype(np.uint8)).save(a.dst)
+    print("PHASE infer %.2f" % (time.time() - t1), flush=True)
     # 用实际输出尺寸汇报，不靠 w*scale 推算（模型内部若做 padding 会不一致）
     print("完成 %dx%d -> %dx%d · %.1fs" % (w, h, ow, oh, time.time() - t1), flush=True)
     sys.stdout.flush()

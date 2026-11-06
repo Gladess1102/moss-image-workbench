@@ -245,6 +245,10 @@ UPSCALE_MODELS = SR.MODELS
 UPSCALE_GROUPS = SR.GROUPS
 DEFAULT_UPSCALE = SR.DEFAULT
 SEEDVR2_CLI = shutil.which("mflux-upscale-seedvr2")
+# 2026-11-07：seedvr2_fold 把 VAE 的 3D 时间卷积折叠成 2D（静止图 T 恒为 1，
+# 原实现复制首帧凑 3 帧再做 3×3×3 卷积，数学上等价于 w.sum(axis=1) 的 2D 卷积）。
+# 本机实测：241s → 145s（1.66×），峰值 MLX 11.27 → 8.43 GB，输出 PSNR 61.2 dB。
+SEEDVR2_FOLD = os.path.join(ROOT, "tools", "seedvr2_fold")
 # MewZoom 的独立执行器：TrunkNet 架构不在 spandrel 里，必须用官方 mewzoom 库。
 # 该库 import torch，所以只能在这个子进程里加载；主进程永不 import 它。
 MEWZOOM_RUNNER = os.path.join(BASE, "mewzoom_runner.py")
@@ -269,7 +273,7 @@ def _upscale_ok(model_id, mdef):
     用户在 UI 里点了才拿到 500。seedvr2 走 CLI、不经 pysafe，单独判。
     """
     if mdef.get("engine") == "seedvr2":
-        return bool(SEEDVR2_CLI)
+        return bool(SEEDVR2_CLI) or os.path.isfile(SEEDVR2_FOLD)
     if not (os.path.isfile(PYSAFE) and os.path.isfile(_upscale_runner(mdef))):
         return False
     return SR.weight_ok(model_id)
@@ -508,6 +512,39 @@ def _read_mem_pct():
 _SYS_CACHE = {"t": 0.0, "v": None}
 
 
+# 各引擎的峰值内存估计（GB）。宁可高估：低估会直接把整机拖进 swap。
+_PEAK_GB = {"seedvr2": 11.3, "thera": 3.0, "mewzoom": 2.0}
+_PEAK_GB_DEFAULT = 6.0        # ATD / ESRGAN 系
+
+
+def _peak_gb(mdef):
+    return _PEAK_GB.get(mdef.get("engine", "spandrel"), _PEAK_GB_DEFAULT)
+
+
+def _wait_memory(need_gb, job_id, log, timeout_s=120.0, ratio=0.6):
+    """等可用内存到 ratio×峰值再开跑，最多等 timeout_s 秒；超时带警告放行。
+
+    2026-11-07 实测：同一份 upscale_runner、同一张 512² 图，swap 被压到 5.9GB 时
+    跑 271s，内存干净时跑 132s —— 差别不是代码，是换页。硬上等于主动把 2 分钟
+    的任务拖成 4 分半，还顺带把整机拖进 swap 抖动。
+    只"等"不"拒绝"：用户已经在排队，拒绝比慢更糟。
+    """
+    t0 = time.time()
+    while True:
+        if (JOBS.get(job_id) or {}).get("cancelled"):
+            return False
+        s = sys_sample()
+        free = float(s.get("free_gb") or 0)
+        if free >= ratio * need_gb:
+            return True
+        if time.time() - t0 >= timeout_s:
+            log.append("内存不足仍开跑：free=%.1fGB / 需要≈%.1fGB / swap 已用 %.1fGB"
+                       % (free, need_gb, float(s.get("swap_used_gb") or 0)))
+            return False
+        _patch(job_id, phase="等待内存 %.1f/%.1fGB" % (free, ratio * need_gb))
+        time.sleep(5)
+
+
 def sys_sample():
     now = time.time()
     # 多个前端/重复请求在 1.5s 内共用同一次采样，避免重复 fork vm_stat/sysctl
@@ -569,6 +606,9 @@ def sys_sample():
 # 于是进度条恒为 0、阶段永远显示"文本编码中"（实际早在去噪了）。
 RE_MLX = re.compile(r"第\s*(\d+)/(\d+)\s*步(?:完成)?\s*(?:\[[^\]]*\])?\s*\(([\d.]+)s\)")
 RE_UPSCALE = re.compile(r"^UPSCALE (\d+)/(\d+) ([\d.]+)$")
+# 2026-11-07：runner 打的分段行（PHASE load 1.8 / PHASE infer 5.6），
+# 用来回答「7.4s 里多少是冷启动」——之前只能靠估算。
+RE_PHASE = re.compile(r"^PHASE (load|infer) ([\d.]+)$")
 
 
 def _prune_jobs():
@@ -799,6 +839,10 @@ def _stream(cmd, env, job_id, log, quiet=False):
                     log.pop(0)
                 if quiet:
                     continue
+                mp = RE_PHASE.match(line)
+                if mp:
+                    _patch(job_id, **{mp.group(1) + "_sec": round(float(mp.group(2)), 2)})
+                    continue
                 mu = RE_UPSCALE.match(line)
                 if mu:
                     cur, total, sec = int(mu.group(1)), int(mu.group(2)), float(mu.group(3))
@@ -978,21 +1022,34 @@ def run_upscale_job(job_id, p):
         #   ✗ --vae-tile-size 768：768² 的块比 512² 大 2.25 倍，VAE 解码阶段直接 OOM。
         #   ✓ 保留 --low-ram（它同时限制 MLX 缓存并防峰值失控），只把缓存上限从默认 1GB 提到 2GB，
         #     给 16384-token 的注意力张量留余量、减少 buffer 反复分配释放的抖动。
-        cmd = [SEEDVR2_CLI, "--model", model_arg, "--quantize", "8",
-               "--low-ram", "--vae-tiling",
-               "--mlx-cache-limit-gb", "2",
-               "--image-path", src, "--output", dst,
-               "--resolution", "%dx" % int(mdef.get("scale") or 4),
-               "--seed", str(p.get("seed") if p.get("seed") is not None else 42)]
+        # 2026-11-07：优先走 seedvr2_fold（VAE 3D→2D 折叠，实测 1.66× / 峰值 -2.84GB）；
+        # 缺这个文件时回退原 CLI，行为不变。
+        # 另外 --vae-tiling 对 SeedVR2 是 no-op（initializer 无条件 TilingConfig()），已删。
+        cli = ([sys.executable, SEEDVR2_FOLD] if os.path.isfile(SEEDVR2_FOLD)
+               else [SEEDVR2_CLI])
+        cmd = cli + ["--model", model_arg, "--quantize", "8",
+                     "--low-ram", "--mlx-cache-limit-gb", "2",
+                     "--image-path", src, "--output", dst,
+                     "--resolution", "%dx" % int(mdef.get("scale") or 4),
+                     "--seed", str(p.get("seed") if p.get("seed") is not None else 42)]
     else:
+        # 2026-11-07：tile/overlap 改由 registry 按模型给（ATD 384/16、ESRGAN 512/32）。
+        # 原来硬编码 512/32 会让 ATD 在 1024² 源上多算 1.8 倍并撞 swap。
         cmd = [PYSAFE, UPSCALE_RUNNER,
                "--in", src, "--out", dst,
-               "--model", p["model"], "--tile", "512", "--overlap", "32"]
+               "--model", p["model"],
+               "--tile", str(mdef.get("tile") or 384),
+               "--overlap", str(mdef.get("overlap") or 16)]
     log = []
     with GPU_LOCK:
         if JOBS[job_id].get("cancelled"):     # 排队期间被取消
             return
-        _patch(job_id, status="running", started=time.time(),
+        # 2026-11-07：先等内存再开跑，等待时间不计入 elapsed（started 在等完之后才写）。
+        _patch(job_id, status="running", phase="等待内存")
+        _wait_memory(_peak_gb(mdef), job_id, log)
+        if JOBS[job_id].get("cancelled"):
+            return
+        _patch(job_id, started=time.time(),
                phase="重绘" if seedvr2 else "加载")
         try:
             rc = _stream(cmd, dict(os.environ), job_id, log, quiet=seedvr2)

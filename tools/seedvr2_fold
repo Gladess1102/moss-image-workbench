@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""seedvr2_fold — 把 SeedVR2 VAE 的 3D 时间卷积折叠成 2D，然后照常跑 mflux 的 CLI。
+
+为什么这么做
+------------
+mflux 的 CausalConv3d（models/seedvr2/model/seedvr2_vae/common/conv3d.py:35-54）
+在 T=1 时会先复制首帧把时间维撑到 3，再做真 3×3×3 卷积，最后截回 1 帧。
+但 SeedVR2 是静止图模型，全链路 T 恒为 1 —— 于是 64 个卷积（编码 26 + 解码 38）
+都在对「三帧完全相同」的输入做 3D 卷积。数学上恒等于：
+
+    w2d = weight.sum(axis=1)          # (out, kh, kw, in)
+    y   = conv2d(x[:, :, 0], w2d, stride=(sh, sw), padding=(ph, pw))
+
+即卷积 FLOPs ÷3，还省掉 mx.repeat/concatenate 的 3× 输入拷贝和两次 5D transpose。
+数值上与原件不是逐位相同（累加顺序变了），但等价性可由上面这行恒等式保证。
+
+用法
+----
+    seedvr2_fold --model <dir> --quantize 8 --low-ram ... （参数与 mflux-upscale-seedvr2 完全一致）
+
+只对「T==1 且时间核 >1」的卷积生效，其它情况原样走 mflux 的实现，所以不需要
+为 downsample（stride=2）或 1×1×1 卷积做特判。
+"""
+import sys
+
+
+def main() -> int:
+    import mlx.core as mx
+    from mflux.models.seedvr2.model.seedvr2_vae.common import conv3d as c3
+
+    orig_call = c3.CausalConv3d.__call__
+
+    def folded_call(self, x):
+        B, C, T, H, W = x.shape
+        kt, kh, kw = self.kernel_size
+        pt, ph, pw = self.padding
+        st, sh, sw = self.stride
+
+        # 只在「单帧 + 时间核 >1」时折叠；其余（含 T>1 的边界情况）原样回退。
+        if T != 1 or kt <= 1:
+            return orig_call(self, x)
+
+        w2d = mx.sum(self.weight, axis=1)                 # (out, kh, kw, in)
+        x2 = x[:, :, 0, :, :].transpose(0, 2, 3, 1)       # (B, H, W, C)
+        out = mx.conv2d(x2, w2d, stride=(sh, sw), padding=(ph, pw))
+        out = out + self.bias
+        return out.transpose(0, 3, 1, 2)[:, :, None, :, :]  # (B, out, 1, H', W')
+
+    c3.CausalConv3d.__call__ = folded_call
+
+    from mflux.models.seedvr2.cli.seedvr2_upscale import main as cli_main
+    sys.argv = ["seedvr2_fold"] + sys.argv[1:]
+    cli_main()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

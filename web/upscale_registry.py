@@ -39,7 +39,10 @@ MODELS = {
         "engine": "spandrel",
         "rel": "web/models/4xNomos2_hq_atd.pth",
         "scale": 4,
-        "note": "保真冠军 · 不脑补 · ~131s · ATD 吃内存",
+        # 2026-11-07：ATD 的 AC_MSA attn 张量随块边长线性涨（512→1.6GB、768→3.6GB），
+        # 16GB 机器上 384 是安全区；小块每像素也更便宜（0.4534 vs 0.5730 ms/px）。
+        "tile": 384, "overlap": 16,
+        "note": "保真冠军 · 不脑补 · 512² ~126s · ATD 吃内存",
     },
     "mewzoom": {
         "label": "MewZoom 4X",
@@ -63,6 +66,8 @@ MODELS = {
         "engine": "spandrel",
         "rel": "web/models/RealESRGAN_x4plus_anime_6B.pth",
         "scale": 4,
+        # 纯卷积，512 块在 MPS 上走 Winograd 高效路径，且内存无压力 —— 保持大块。
+        "tile": 512, "overlap": 32,
         "note": "动漫专用 · 17.9MB · 最快 4.4s",
     },
     "seedvr2": {
@@ -74,7 +79,7 @@ MODELS = {
         # mflux 的 --model 接受本地路径；目录不在时 app.py 回退内置名 seedvr2-3b。
         "model_dir": "upscale/models/seedvr2-3b-q8",
         "scale": 4,
-        "note": "重绘补结构 · 不改文字 · ~252s · 峰值 11G",
+        "note": "重绘补结构 · 不改文字 · ~145s · 峰值 8.4G",
     },
 }
 

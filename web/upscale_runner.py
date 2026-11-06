@@ -13,6 +13,7 @@
   UPSCALE <cur>/<total> <sec>
 """
 import argparse
+import math
 import os
 import sys
 import time
@@ -29,7 +30,14 @@ WHOLE_LIMIT = 500_000
 
 
 def plan_tiles(w, h, tile, overlap):
-    """返回 (xs, ys)，块大小不超过 tile，覆盖整图。"""
+    """返回 (xs, ys)，块大小不超过 tile，覆盖整图。
+
+    2026-11-07 重写：原实现是「按 step 步进，末尾不够再补一块 n-tile」，
+    在 1024² + (512,32) 上会得到 [0, 480, 512] —— 第二块 480..992 与第三块
+    512..1024 重叠 480px（几乎整块重复计算），9 块里有 2 块是白算的。
+    改成「先算块数、再在 [0, n-tile] 上均分起点」，重叠变得均匀（1024² 上
+    384/16 的相邻重叠 64px 而不是 480px），块数不变但每块都在干有效活。
+    """
     if w <= tile and h <= tile:
         return [0], [0]
     step = max(tile - overlap, 1)
@@ -37,12 +45,40 @@ def plan_tiles(w, h, tile, overlap):
     def axis(n):
         if n <= tile:
             return [0]
-        pos = list(range(0, n - tile + 1, step))
-        if pos[-1] + tile < n:
-            pos.append(n - tile)
-        return pos
+        count = int(math.ceil((n - tile) / step)) + 1
+        if count <= 1:
+            return [0]
+        starts = [int(round(i * (n - tile) / (count - 1))) for i in range(count)]
+        return sorted(set(starts))
 
     return axis(w), axis(h)
+
+
+def patch_attn_mask_cache(model):
+    """ATD 每次前向都在 CPU 现算 attn_mask，再整块 H2D。
+
+    tile 512 时该张量是 (1024, 256, 256) = 268MB fp32，而它只依赖 (h, w)，
+    同一次 job 里所有块的 (h,w) 完全相同 —— 缓存一次就够，块数越多省得越多。
+    其它架构（ESRGAN 等）没有 calculate_mask，直接跳过。
+    """
+    try:
+        cls = type(model.model)
+        orig = cls.calculate_mask
+    except AttributeError:
+        return False
+
+    cache = {}
+
+    def _cached(self, x_size):
+        key = (int(x_size[0]), int(x_size[1]))
+        hit = cache.get(key)
+        if hit is None:
+            hit = orig(self, x_size)
+            cache[key] = hit
+        return hit
+
+    cls.calculate_mask = _cached
+    return True
 
 
 def main():
@@ -50,8 +86,11 @@ def main():
     ap.add_argument("--in", dest="src", required=True)
     ap.add_argument("--out", dest="dst", required=True)
     ap.add_argument("--model", default="remacri")
-    ap.add_argument("--tile", type=int, default=512)
-    ap.add_argument("--overlap", type=int, default=32)
+    # 2026-11-07：384/16 是 ATD 的安全区（AC_MSA 的 attn 张量 ≈0.9GB、attn_mask ≈151MB），
+    # 且小块每像素更便宜（实测 256² 0.4534 ms/px vs 512² 0.5730 ms/px）。
+    # 512/32 在 16GB 机器上会让 ATD 撞 swap，1024² 源要多算一倍多。
+    ap.add_argument("--tile", type=int, default=384)
+    ap.add_argument("--overlap", type=int, default=16)
     a = ap.parse_args()
 
     try:
@@ -73,7 +112,11 @@ def main():
     model.eval()
     model.to(dev)
     scale = int(getattr(model, "scale", 4) or 4)
+    if patch_attn_mask_cache(model):
+        print("attn_mask 已缓存（同形状块复用）", flush=True)
     print("模型就绪 %.1fs · %s · x%d" % (time.time() - t0, dev.type, scale), flush=True)
+    # 结构化分段：app.py 的 _stream 解析后写进 job 与快照，用来回答「7.4s 里多少是启动」
+    print("PHASE load %.2f" % (time.time() - t0), flush=True)
 
     src = Image.open(a.src).convert("RGB")
     w, h = src.size
@@ -111,6 +154,7 @@ def main():
             print("UPSCALE %d/%d %.2f" % (cur, total, time.time() - t1), flush=True)
 
     canvas.save(a.dst)
+    print("PHASE infer %.2f" % (time.time() - t1), flush=True)
     print("完成 %dx%d -> %dx%d · %.1fs" % (w, h, w * scale, h * scale, time.time() - t0), flush=True)
     sys.stdout.flush()
     return 0

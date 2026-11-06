@@ -21,5 +21,6 @@ out/
 .DS_Store
 _*
 
-# 超分权重
+# 超分权重（带斜杠只匹配目录，本机测试时 web/models 是软链，需要无斜杠那条）
+web/models
 web/models/
