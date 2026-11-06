@@ -611,6 +611,70 @@ RE_UPSCALE = re.compile(r"^UPSCALE (\d+)/(\d+) ([\d.]+)$")
 RE_PHASE = re.compile(r"^PHASE (load|infer) ([\d.]+)$")
 
 
+# ── 任务状态落盘（2026-11-07）────────────────────────────────────────────
+# 原来 JOBS 只在内存里：服务一崩/一重启，正在跑的任务和最近历史全没了，前端
+# 拿到 404 只能干等；更糟的是子进程可能还活着，白占 11 GB 内存没人管。
+# 现在每 2s 落一次盘，启动时恢复：运行中的任务标成"服务重启，任务中断"，
+# 并把还活着的 runner 子进程杀掉。
+_STARTED = time.time()
+JOBS_FILE = os.path.join(os.path.expanduser("~"), ".moss-image", "jobs.json")
+_last_persist = [0.0]
+
+
+def _persist_jobs():
+    try:
+        os.makedirs(os.path.dirname(JOBS_FILE), exist_ok=True)
+        # pid 必须留下：重启后要靠它找到并杀掉上次残留的 runner 子进程。
+        # 用之前会先验命令行（_kill_if_runner），避免 pid 复用误杀。
+        with JOBS_LOCK:
+            data = {k: dict(v) for k, v in JOBS.items()}
+        tmp = JOBS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, JOBS_FILE)
+    except Exception:
+        pass          # 落盘失败不影响跑任务
+
+
+def _kill_if_runner(pid):
+    """只杀真正的 runner 子进程（pid 可能已被系统复用给别的进程）。"""
+    try:
+        out = subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="],
+                             capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return False
+    if not any(x in out for x in ("upscale_runner", "mewzoom_runner",
+                                  "thera_runner", "seedvr2_fold", "mflux-upscale")):
+        return False
+    try:
+        os.kill(int(pid), signal.SIGKILL)
+        return True
+    except Exception:
+        return False
+
+
+def _restore_jobs():
+    try:
+        with open(JOBS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return
+    killed = 0
+    for k, v in (data or {}).items():
+        if not isinstance(v, dict):
+            continue
+        if v.get("status") in ("running", "queued"):
+            pid = v.get("pid")
+            if pid and _kill_if_runner(pid):
+                killed += 1
+            v.update(status="error", phase="error", pid=None,
+                     error="工作台服务重启，任务已中断")
+        JOBS[k] = v
+    if killed:
+        print("启动清理：杀掉 %d 个上次残留的推理子进程" % killed, flush=True)
+    _prune_jobs()
+
+
 def _prune_jobs():
     """已结束的任务只保留最近 50 条。JOBS 原本只增不减，长期运行会一直涨。"""
     with JOBS_LOCK:
@@ -626,6 +690,10 @@ def _prune_jobs():
 def _patch(job_id, **kw):
     with JOBS_LOCK:
         JOBS[job_id].update(kw)
+    now = time.time()
+    if now - _last_persist[0] >= 2.0:
+        _last_persist[0] = now
+        _persist_jobs()
 
 
 ENH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_enhance.py")
@@ -1124,8 +1192,16 @@ class H(BaseHTTPRequestHandler):
             # 应用级身份握手：壳/启动器用它判断「7860 上跑的到底是不是工作台」。
             # 之前只判断端口能连，任何占用 7860 的程序都会被当成工作台复用。
             # 同时它也是看护循环「活着且 HTTP 没卡死」的判据。
+            # 2026-11-07：加上运行态字段。壳/看护除了"端口活着"，还能判断
+            # "活着但任务卡死 / 内存吃满 / 线程泄漏"。
+            with JOBS_LOCK:
+                running = sum(1 for j in JOBS.values() if j.get("status") == "running")
+                queued = sum(1 for j in JOBS.values() if j.get("status") == "queued")
             return self._json({"app": "moss-image", "pid": os.getpid(),
-                               "version": "2026-10-24"})
+                               "version": "2026-10-24",
+                               "uptime": round(time.time() - _STARTED, 1),
+                               "running": running, "queued": queued,
+                               "threads": threading.active_count()})
         if u.path == "/api/meta":
             return self._json({
                 "engines": [{"id": k, "label": v["label"], "note": v["note"],
@@ -1516,6 +1592,14 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     # token 只在真正跑服务时落盘：import app 的脚本（compress_history.py）不该产生副作用
     _write_token_file()
+    _restore_jobs()          # 恢复上次的任务状态 + 杀掉残留 runner
+
+    # 线程里未捕获的异常以前只打到 stderr（被壳重定向后常常没人看），
+    # 现在统一带线程名打印，排障时能定位是哪条任务链。
+    def _thread_exc(args):
+        print("线程异常 [%s]: %r" % (getattr(args.thread, "name", "?"), args.exc_value), flush=True)
+    threading.excepthook = _thread_exc
+
     # 端口统一：MOSS_PORT 优先（.command / 壳都读它），其次兼容旧的 PORT
     port = int(os.environ.get("MOSS_PORT") or os.environ.get("PORT") or "7860")
     print("MOSS-Image workbench -> http://127.0.0.1:" + str(port), flush=True)
@@ -1526,4 +1610,14 @@ if __name__ == "__main__":
     elif _IDLE_EXIT > 0:
         print("空闲自退已启用：连续 %d 秒无请求且无任务即退出" % _IDLE_EXIT, flush=True)
         threading.Thread(target=_idle_watchdog, daemon=True).start()
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    # 2026-11-07：accept 循环异常不直接退出。临时 EMFILE / 网络抖动不该让整个
+    # 工作台消失（桌面壳会重启它，但纯后端模式没人管）。
+    while True:
+        try:
+            ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+            break
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print("服务循环异常：%r；3s 后重建" % (e,), flush=True)
+            time.sleep(3)

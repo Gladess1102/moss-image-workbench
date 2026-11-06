@@ -115,6 +115,12 @@ body.light .go{box-shadow:0 4px 16px rgba(72,103,214,.28)}
 .pline{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-top:6px;
   font-variant-numeric:tabular-nums}
 .pline b{color:var(--fg);font-weight:600}
+/* 2026-11-07：与服务断开时的常驻横幅。原来连续 5 次拿不到状态就停轮询 + 弹一次性
+   错误，服务重启后页面不会自愈，只能手动刷新。横幅 + 继续重试才是正确姿势。 */
+#connBar{position:fixed;top:0;left:0;right:0;z-index:9999;padding:7px 14px;
+  background:rgba(204,68,64,.94);color:#fff;font-size:12px;text-align:center;
+  letter-spacing:.02em;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+#connBar.hidden{display:none}
 .errbox{color:var(--err);font-size:12px;white-space:pre-wrap;margin-top:10px;
   background:rgba(240,98,93,.07);border:1px solid rgba(240,98,93,.25);border-radius:10px;padding:10px;
   max-height:140px;overflow:auto}
@@ -241,6 +247,7 @@ body.light .hitem img{background:#e7e5d4}
 </style>
 </head>
 <body>
+<div id="connBar" class="hidden"></div>
 <div class="netbanner hidden" id="netBanner"><span class="dot2"></span><span id="netBannerText">工作台服务已断开，正在自动恢复…</span></div>
 <div class="app">
 
@@ -412,6 +419,33 @@ const $=id=>document.getElementById(id);
 let META=null, JOB=null, POLL=null, LASTFILE=null, LASTSEED=null, LBF=null, LAST_MODE=null;
 /* 连续轮询失败计数：服务挂了/任务丢了时，原来的空 catch 会让进度条永远转圈 */
 let POLLFAIL=0;
+
+/* 2026-11-07：带超时的 fetch。服务"端口活着但卡死"时原生 fetch 会挂到浏览器
+   默认超时（可达 60s+），轮询会堆积成一串挂起请求。8s 足够本机任何接口响应。 */
+function jfetch(url, opt){
+  const c = new AbortController();
+  const t = setTimeout(()=>c.abort(), 8000);
+  return fetch(url, Object.assign({signal:c.signal}, opt||{})).finally(()=>clearTimeout(t));
+}
+
+/* 与服务断开的常驻横幅：服务重启后自动消失，不需要用户手动刷新 */
+let DISCONNECTED=false;
+function setConn(ok, msg){
+  const b=$('connBar'); if(!b) return;
+  if(ok){ if(DISCONNECTED){ b.classList.add('hidden'); DISCONNECTED=false; } return; }
+  b.textContent=msg; b.classList.remove('hidden'); DISCONNECTED=true;
+}
+
+/* 全局错误边界：未捕获的脚本错误在界面上说一句，而不是静默失效。
+   资源加载错误（img/script 404）没有 message，直接忽略，不打扰用户。 */
+window.addEventListener('error', e=>{
+  if(!e.message) return;
+  console.error(e.error||e.message);
+  showErr('界面脚本出错：'+e.message+'（功能可能受影响，刷新可恢复）');
+});
+window.addEventListener('unhandledrejection', e=>{
+  console.error('unhandledrejection', e.reason);
+});
 const state={engine:'mlx8', mode:'akk4'};
 /* 档位是否带 LoRA 由后端 /api/meta 的 lora 字段决定（新增 akhaliq 档后不再写死 id） */
 function curMode(){ return ((META&&META.lora_modes)||[]).find(x=>x.id===state.mode)||{}; }
@@ -792,9 +826,15 @@ function generate(){
 
 function pollJob(){
   if(!JOB) return;
-  fetch('/api/job?id='+encodeURIComponent(JOB)).then(r=>r.json()).then(j=>{
+  jfetch('/api/job?id='+encodeURIComponent(JOB)).then(r=>r.json()).then(j=>{
     POLLFAIL=0;
-    if(j.error&&j.status===undefined) return;
+    setConn(true);
+    if(j.error&&j.status===undefined){
+      /* 服务端已经没有这个任务了（服务重启 / 任务被清理）：别再空转 */
+      clearInterval(POLL); POLL=null; setBusy(false); JOB=null;
+      showErr('任务已丢失（工作台可能重启过），请重新提交');
+      return;
+    }
     $('pbar').style.width=(j.progress||0)+'%';
     const ph={排队:'排队中',加载:'模型加载中…',编码:'文本编码中',去噪:'去噪采样中',解码:'VAE 解码中',超分:'超分中',重绘:'生成式重绘中',done:'完成',error:'失败'}[j.phase]||j.phase;
     $('pPhase').innerHTML=`<b>${ph}</b>${j.step?' · '+j.step:''}${j.sec_per_step?' · '+j.sec_per_step.toFixed(1)+'s/步':''}${j.stream?' · 流式':''}`;
@@ -822,11 +862,11 @@ function pollJob(){
       $('stBody').innerHTML='<div class="empty"><span class="big">✕</span>生成失败，看看左下角错误信息</div>';
     }
   }).catch(()=>{
-    /* 原来这里是空实现：服务挂掉后进度条一直转，用户不知道发生了什么。
-       连续 5 次（约 7.5s）拿不到任务状态就明确报错并停止轮询。 */
+    /* 2026-11-07：不再"连续 5 次就放弃并停轮询"。服务重启或短暂不可达时，
+       页面应该自己恢复（桌面壳会自动拉起后端），而不是让用户手动刷新。
+       这里只提示 + 继续按原频率重试；请求失败在 localhost 上是立即返回的。 */
     if(++POLLFAIL<5) return;
-    clearInterval(POLL); POLL=null; setBusy(false); JOB=null; POLLFAIL=0;
-    showErr('连续 5 次拿不到任务状态：工作台服务可能已停止。检查后台进程后重新启动，刷新页面可恢复监控。');
+    setConn(false, '与服务断开，正在自动重连…（已重试 '+POLLFAIL+' 次）');
   });
 }
 
