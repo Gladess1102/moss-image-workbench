@@ -5,6 +5,7 @@
 
 [![ci](https://github.com/Gladess1102/moss-image-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/Gladess1102/moss-image-workbench/actions/workflows/ci.yml)
 macOS · Apple Silicon · MLX · Apache-2.0 ｜ [English](README.en.md)
+**遇到问题或想提需求 → [Issues](https://github.com/Gladess1102/moss-image-workbench/issues)**：附上 macOS 版本、芯片型号和出问题的档位，日志面板最后几十行最好一起贴。
 
 ![工作台主界面](assets/ui-main.webp)
 

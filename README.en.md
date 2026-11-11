@@ -5,6 +5,7 @@ Not "it loads" - "it generates continuously, swap stays near zero, and every spe
 
 [![ci](https://github.com/Gladess1102/moss-image-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/Gladess1102/moss-image-workbench/actions/workflows/ci.yml)
 macOS · Apple Silicon · MLX · Apache-2.0 | [中文](README.md)
+**Found a problem or want a feature → [Issues](https://github.com/Gladess1102/moss-image-workbench/issues).** Please include your macOS version, chip, and the preset that failed; the last few dozen lines of the log panel help most.
 
 ![Workbench UI](assets/ui-main.webp)
 
