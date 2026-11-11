@@ -1,0 +1,108 @@
+[
+  {
+    "name": "baseline",
+    "skip_ratio": 0.0,
+    "protected_fraction": null,
+    "mode": "official",
+    "seconds": 511.8,
+    "skipped": [],
+    "n_skipped": 0,
+    "forward_passes": 50
+  },
+  {
+    "name": "official_pf0.10",
+    "skip_ratio": 0.3,
+    "protected_fraction": 0.1,
+    "mode": "official",
+    "seconds": 312.1,
+    "skipped": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "n_skipped": 8,
+    "forward_passes": 34,
+    "psnr_vs_baseline": 18.3,
+    "mae": 24.39
+  },
+  {
+    "name": "official_pf0.32",
+    "skip_ratio": 0.3,
+    "protected_fraction": 0.32,
+    "mode": "official",
+    "seconds": 304.9,
+    "skipped": [
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "n_skipped": 8,
+    "forward_passes": 34,
+    "psnr_vs_baseline": 25.39,
+    "mae": 10.31
+  },
+  {
+    "name": "official_pf0.40",
+    "skip_ratio": 0.3,
+    "protected_fraction": 0.4,
+    "mode": "official",
+    "seconds": 346.2,
+    "skipped": [
+      10,
+      11,
+      12,
+      13,
+      14
+    ],
+    "n_skipped": 5,
+    "forward_passes": 40,
+    "psnr_vs_baseline": 32.73,
+    "mae": 3.98
+  },
+  {
+    "name": "workbench_adaptive",
+    "skip_ratio": 0.0,
+    "protected_fraction": null,
+    "mode": "adaptive",
+    "seconds": 310.8,
+    "skipped": [
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20
+    ],
+    "n_skipped": 7,
+    "forward_passes": 36,
+    "psnr_vs_baseline": 35.93,
+    "mae": 2.54
+  },
+  {
+    "name": "fixed_spread8(no-protected-window-needed)",
+    "seconds": 294.0,
+    "skipped": [
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20,
+      22
+    ],
+    "n_skipped": 8,
+    "psnr_vs_baseline": 35.51
+  }
+]
