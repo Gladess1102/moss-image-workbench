@@ -157,6 +157,21 @@ function start() {
   child.on("exit", (code) => process.exit(code === null ? 0 : code));
 }
 
+function mcp() {
+  // MCP stdio：stdout 是协议流，这里不能往 stdout 写任何东西（日志一律走 stderr）。
+  const dir = checkoutDir();
+  if (!dir) die("没找到工作台目录：先跑 moss-wb setup，或用 --dir 指定");
+  const server = path.join(dir, "agent", "mcp_server.py");
+  if (!fs.existsSync(server)) die("缺少 " + server + "（仓库版本过旧？）");
+  const py = venvPython(dir) || (pythonVersion() || {}).bin;
+  if (!py) die("找不到 python3（MCP server 只用标准库，但需要一个解释器）");
+  const child = spawn(py, [server], { cwd: dir, stdio: "inherit", env: process.env });
+  const stop = (sig) => { try { child.kill(sig); } catch (_) {} };
+  process.on("SIGINT", () => stop("SIGINT"));
+  process.on("SIGTERM", () => stop("SIGTERM"));
+  child.on("exit", (code) => process.exit(code === null ? 0 : code));
+}
+
 function models() {
   const dir = checkoutDir() || DEFAULT_DIR;
   console.log("主模型约 8 GB，走 Hugging Face：");
@@ -179,13 +194,17 @@ function help() {
   moss-wb doctor [--dir <路径>] [--port <端口>]
       环境自检：平台 / Python / venv / 模型 / 端口
 
+  moss-wb mcp [--dir <路径>]
+      以 stdio 启动 MCP server（11 个 moss_* 工具），给 Claude Desktop / Cursor 等客户端用：
+      {"mcpServers":{"moss-image":{"command":"npx","args":["-y","moss-image-workbench","mcp"]}}}
+
   moss-wb models
       打印模型下载命令
 
 只支持 macOS + Apple Silicon（依赖 MLX / Metal）。`);
 }
 
-const table = { setup, start, doctor, models, help, "-h": help, "--help": help };
+const table = { setup, start, doctor, mcp, models, help, "-h": help, "--help": help };
 if (!table[cmd]) {
   console.error("未知子命令：" + cmd);
   help();

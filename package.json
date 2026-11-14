@@ -1,6 +1,6 @@
 {
   "name": "moss-image-workbench",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MOSS-Image local workbench for Apple Silicon: one-command setup and launcher (mflux + MLX)",
   "bin": {
     "moss-wb": "bin/moss-wb.js"

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.5 — 2026-11-14
+
+**agent 接口层进仓库 + npm 一键挂 MCP。**
+
+### Added
+
+- `agent/`：MCP stdio server（11 个 `moss_*` 工具）、零依赖客户端、CLI、机器契约 `contract.json`、自测与验收套件。此前只在开发版里存在。
+- `docs/agent-interface.md`：agent 接口规范全文。
+- `moss-wb mcp`：以 stdio 启动 MCP server，客户端配置只需一行 `npx -y moss-image-workbench mcp`，不用写 Python 路径。
+- `moss-wb --help` 补上 MCP 用法。
+
+### Fixed
+
+- `moss_client._runtime_versions()` 之前只认开发版的 `venv-mflux024`，发布版的 `.venv-mflux` 探测不到，版本信息为空。
+- `mcp_server.py` 文档里的示例路径不再写死作者的家目录。
+
 ## 0.1.4 — 2026-11-14
 
 **npm 一键部署。**

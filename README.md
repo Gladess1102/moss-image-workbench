@@ -96,6 +96,22 @@ npm 包只是个启动器（约 12 KB），代码和权重仍然落在本地目�
 - `start --port 7861` 换端口（等价于 `MOSS_PORT=7861`）
 - 已经手动 clone 过的目录，直接 `npx moss-image-workbench start` 也能用
 
+### 给 agent 用：MCP server
+
+同一套接口也能作为 MCP server 挂给 Claude Desktop / Cursor / 自研客户端：
+
+    {"mcpServers": {"moss-image": {
+        "command": "npx", "args": ["-y", "moss-image-workbench", "mcp"]}}}
+
+11 个工具：`moss_capabilities`、`moss_backend_status`、`moss_generate`、`moss_generate_batch`、
+`moss_upscale`、`moss_list_outputs`、`moss_inspect`、`moss_replay`、`moss_validate_prompt`、
+`moss_build_layout`、`moss_cancel`。
+
+协议实现只用标准库：stdio 传输（一行一条 JSON-RPC），stdout 只跑协议，日志写
+`~/.moss-image/logs/mcp.log`。不需要客户端知道 Python 路径——`moss-wb mcp` 会挑
+`.venv-mflux` 或系统 python3 起服务。完整契约见 [docs/agent-interface.md](docs/agent-interface.md)
+与 `agent/contract.json`。
+
 ## 档位一览
 
 | 档 | 前向 | 512² | 说明 |

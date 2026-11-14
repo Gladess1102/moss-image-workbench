@@ -1,0 +1,13 @@
+#!/bin/sh
+# mossimg — 薄包装：mossimg generate "..."（可从任意目录调用，也能经符号链接）
+# 解释器可用 MOSS_PYTHON 覆盖（默认 PATH 里的 python3，需要能 import PIL）
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF")
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *)  SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+DIR=$(cd "$(dirname "$SELF")" && pwd)
+exec "${MOSS_PYTHON:-python3}" "$DIR/mossimg.py" "$@"

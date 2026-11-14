@@ -1,0 +1,274 @@
+{
+  "$schema": "moss-image/agent-contract@1",
+  "version": "1.2.0",
+  "updated": "2026-11-08",
+  "purpose": "让本机 agent 以可预测的方式调用 MOSS-Image 端侧出图；本文件是静态契约，动态能力见 capabilities()。",
+  "entrypoints": {
+    "python": "sys.path.insert(0, '~/moss-image/agent'); import moss_client",
+    "cli": "~/moss-image/agent/mossimg <cmd>   # 默认单行 JSON",
+    "mcp": "python3 ~/moss-image/agent/mcp_server.py   # stdio, newline-delimited JSON-RPC",
+    "http": "后端 http://127.0.0.1:7861（发现逻辑见 discovery；7860 留给工作台/IndexTTS）"
+  },
+  "discovery": {
+    "order": [
+      "MOSS_AGENT_URL 环境变量",
+      "~/.moss-image/agent-endpoint.json",
+      "端口 7860..7869 的 /api/health"
+    ],
+    "health_check": "GET /api/health 返回 app == 'moss-image'",
+    "autostart": "找不到时自动拉起 web/app.py（MOSS_AGENT_AUTOSTART=0 可禁用），端点写入 agent-endpoint.json",
+    "port_policy": "自己拉起时从 7861 起（MOSS_AGENT_PORT 可改）；发现阶段仍会复用 7860 上已有的工作台实例，但绝不占用 7860",
+    "single_instance": "同一端口只跑一个后端；后端用 GPU_LOCK 串行执行任务，排队上限 MOSS_MAX_QUEUE(默认6)",
+    "idle_exit": "agent 拉起的实例默认空闲 1800s 自退（MOSS_AGENT_IDLE_EXIT 可改）"
+  },
+  "presets": {
+    "draft": {
+      "engine": "mlx8",
+      "lora_mode": "akk4",
+      "width": 512,
+      "height": 512,
+      "eta_s": 56,
+      "note": "验证构图/措辞；负面词不生效；实测 55.8s"
+    },
+    "standard": {
+      "engine": "mlx8",
+      "lora_mode": "akk4",
+      "width": 1184,
+      "height": 896,
+      "eta_s": 189,
+      "note": "日常出片；1MP 训练比例；负面词不生效；实测 189s"
+    },
+    "quality": {
+      "engine": "msmlx",
+      "lora_mode": "turbo",
+      "width": 1184,
+      "height": 896,
+      "eta_s": 676,
+      "note": "最高质量；负面词生效；实测 676s（1184x896）"
+    },
+    "precise": {
+      "engine": "mlx8",
+      "lora_mode": "native25",
+      "width": 1184,
+      "height": 896,
+      "eta_s": 1160,
+      "note": "25 步 CFG3 + 自适应跳步；负面词生效；适合复杂 Layout JSON；未实测"
+    }
+  },
+  "official_defaults": {
+    "steps": 50,
+    "cfg": 3,
+    "shift": 5,
+    "sampler": "Flow-matching Euler",
+    "uncond_skip_layers": 22,
+    "negative": "空（Python API 默认不传）",
+    "resolution": "推荐 1M / 1.5M / 2M 像素；可外推到 0.25M(512²)–4M(2K)",
+    "note": "官方默认 50 步是质量上限口径；本机 16GB 用 4 步蒸馏档起步、turbo 15 次前向追质量。以上出自 OpenMOSS/MOSS-Image README 与 USERGUIDE（见 docs/agent/research-2026-11-08.md）。"
+  },
+  "params": {
+    "prompt": {
+      "type": "string",
+      "required": true,
+      "formats": [
+        "caption",
+        "layout_json"
+      ],
+      "chars_recommended": [
+        1300,
+        2600
+      ],
+      "chars_source": "local-measured（官方只说支持到 4K tokens，没给字符数阈值）",
+      "context_tokens": 4096
+    },
+    "negative": {
+      "type": "string",
+      "default": "官方负面词",
+      "effective_when": "cfg != 1.0",
+      "note": "CFG=1.0 时负分支被跳过（moss_image.py:77-79），负面词静默无效"
+    },
+    "width": {
+      "type": "int",
+      "multiple_of": 16,
+      "min": 256,
+      "max": 4096
+    },
+    "height": {
+      "type": "int",
+      "multiple_of": 16,
+      "min": 256,
+      "max": 4096
+    },
+    "steps": {
+      "type": "int",
+      "min": 1,
+      "max": 200,
+      "default": "档位默认",
+      "ignored_by": [
+        "turbo"
+      ],
+      "note": "200 是本层保守上限；mflux 硬边界是 218（>218 直接报错）"
+    },
+    "cfg": {
+      "type": "float",
+      "min": 0,
+      "max": 20,
+      "default": "档位默认",
+      "ignored_by": [
+        "turbo"
+      ],
+      "note": "官方推荐 3.0–6.0；短 prompt 可调高"
+    },
+    "seed": {
+      "type": "int | 'random'",
+      "range": [
+        0,
+        2147483647
+      ],
+      "note": "random 时后端当场摇值并写进快照"
+    },
+    "engine": {
+      "type": "enum",
+      "values": [
+        "mlx8",
+        "msmlx"
+      ],
+      "default": "mlx8",
+      "note": "turbo 档强制 msmlx"
+    },
+    "lora_mode": {
+      "type": "enum",
+      "values": [
+        "akk4",
+        "turbo",
+        "native25",
+        "none",
+        "full"
+      ],
+      "default": "akk4"
+    },
+    "char_lora": {
+      "type": "string | null",
+      "note": "文件名必须在 capabilities().char_loras 里；turbo 不支持"
+    },
+    "char_lora_scale": {
+      "type": "float",
+      "range": [
+        0,
+        2
+      ],
+      "default": 1
+    },
+    "enhance": {
+      "type": "bool",
+      "default": false,
+      "note": "本地 Qwen3.5-9B 强化提示词，+10~90s，失败自动回退"
+    },
+    "skip": {
+      "type": "float | 'adaptive' | null",
+      "range": [
+        0,
+        0.6
+      ],
+      "note": "仅 steps>=10 生效；缺省跟随档位"
+    },
+    "stream": {
+      "type": "bool",
+      "default": true,
+      "note": "仅 mlx8：DiT 按层 mmap，省 5GB 常驻，输出逐像素一致"
+    },
+    "preset": {
+      "type": "enum",
+      "values": [
+        "draft",
+        "standard",
+        "quality",
+        "precise"
+      ],
+      "default": "draft",
+      "note": "不传时按 draft（512²）出图并带 W_DRAFT_DEFAULT；要成品请显式指定 standard/quality/precise"
+    }
+  },
+  "result": {
+    "path": "绝对路径（无损：不重编码、不 base64 化）",
+    "sha256": "产物哈希（等后台 oxipng 无损重压落定后才计算），用于校验与 replay 比对",
+    "params": "本次实际使用的完整参数（含解析后的 seed）",
+    "meta": "后端写的同名 .json 快照原文",
+    "cached": "true = 命中幂等台账，未重新生成",
+    "warnings": "结构化警告数组（code/message/hint/path）",
+    "url": "后端 /out/<name> 直链（浏览器可直接看）"
+  },
+  "warnings": {
+    "W_DRAFT_DEFAULT": "未指定 preset，按 draft（512² 草稿档）出图",
+    "W_NEG_IGNORED": "CFG=1.0 时负面词不生效",
+    "W_NEG_DEFAULT": "未传负面词，已用官方默认串",
+    "W_TURBO_IGNORES_STEPS": "turbo 档忽略 steps/cfg",
+    "W_PROMPT_LONG": "接近 4096 token 上下文",
+    "W_PROMPT_SHORT": "提示词过短，画面容易失控",
+    "W_LAYOUT_EXTRA_KEYS": "Layout JSON 顶层多余键会被忽略",
+    "W_LAYOUT_SUMMARY_KEYS": "summary 多余键会被忽略",
+    "W_LAYOUT_ITEM_KEYS": "items 项多余键会被忽略",
+    "W_LAYOUT_LABEL": "label 不在官方枚举 object/character/text",
+    "W_LAYOUT_CANVAS": "canvas 不在 single/multi_panel/collage",
+    "W_LAYOUT_ITEMS": "items 数量建议 5–6",
+    "W_LAYOUT_BBOX_ORDER": "bbox 看起来反了（y1<=y2, x1<=x2）",
+    "W_LAYOUT_BBOX_RANGE": "bbox 超出画布中心坐标系",
+    "W_LAYOUT_NEGATIVE": "negative 不能写进 Layout JSON",
+    "W_NOT_IDENTICAL": "replay 结果与原图不一致",
+    "W_STALE_LEDGER": "幂等命中项来自旧版本/旧权重（未启用，仅预留）",
+    "W_UNKNOWN_ARG": "工具调用传了 schema 里没有的参数（已忽略，通常是拼错）"
+  },
+  "idempotency": {
+    "key": "sha256(prompt, negative, engine, lora_mode, width, height, steps, cfg, seed, char_lora, char_lora_scale)[:32]",
+    "default": "seed 为整数时开启；seed=random 时自动关闭",
+    "hit": "同 key 已完成且产物仍在 → 直接返回原结果（cached=true，0 秒）",
+    "inflight": "同 key 正在跑 → 挂到同一 job 一起等，不重复占 GPU",
+    "concurrency": "命中检查与提交在同一把跨进程锁内（毫秒级），等待在锁外；多 agent 并发同键只生成一次，异键由后端 GPU_LOCK 串行",
+    "disable": "dedupe=False / --no-dedupe / 自定义 idempotency_key"
+  },
+  "reproducibility": {
+    "replay": "读同名 .json 快照 → 原样重跑 → 比对 sha256，结果里 identical 字段说明是否逐字节一致",
+    "vary": "同 prompt/参数换 seed 出变体（构图意图保留、采样起点不同）",
+    "caveat": "identical 只在「同引擎 + 同两阶段开关 + 同量化/权重」下承诺；mlx8 与 msmlx 是两套独立实现，跨引擎只保证构图意图接近"
+  },
+  "errors": {
+    "E_VALIDATION": "参数不合法",
+    "E_PROMPT_EMPTY": "prompt 为空",
+    "E_PROMPT_TOO_LONG": "prompt 超出上下文",
+    "E_BAD_LAYOUT_JSON": "Layout JSON 结构错误（顶层四键 / abs_centralized / yxyx / bbox 四数 / text 项缺 text）",
+    "E_SIZE": "宽高必须是 16 的倍数且在 256..4096",
+    "E_UNKNOWN_PRESET": "未知意图档位",
+    "E_UNKNOWN_LORA_MODE": "未知档位 id",
+    "E_UNKNOWN_ENGINE": "未知引擎 id",
+    "E_ENGINE_UNAVAILABLE": "引擎/权重在本机不可用",
+    "E_UNKNOWN_LORA": "角色 LoRA 文件不存在",
+    "E_LORA_UNSUPPORTED": "该档位不支持叠加角色 LoRA",
+    "E_QUEUE_FULL": "后端队列满",
+    "E_BACKEND_DOWN": "后端不可用",
+    "E_BACKEND_START_TIMEOUT": "拉起后端超时",
+    "E_JOB_TIMEOUT": "等待超时（job_id 仍有效，可续等）",
+    "E_JOB_FAILED": "后端任务失败",
+    "E_CANCELLED": "任务被取消",
+    "E_OUTPUT_MISSING": "产物路径找不到（MOSS_OUT 不一致）",
+    "E_UPSCALE_SRC": "超分源图不存在",
+    "E_HTTP": "HTTP/协议层错误",
+    "E_BAD_ARGS": "MCP 层参数类型/取值不合法（在碰后端之前拦下）",
+    "E_INTERNAL": "客户端内部异常（理论上不该出现；出现即 bug）"
+  },
+  "invariants": [
+    "宽高必须是 16 的倍数；1MP 左右最贴训练分布（官方推荐 1M–2M 像素）。",
+    "akk4 档 CFG=1.0 → 负面词完全不参与计算；要负面词请用 quality/precise。",
+    "turbo 档忽略 steps/cfg（固定 15 次前向调度），且不支持角色 LoRA。",
+    "Layout JSON 顶层只能是 summary/items/bbox_coord_space/bbox_format；多写的键会被静默忽略。",
+    "bbox 相对画布中心、单位像素、顺序 y1,x1,y2,x2；换尺寸要按新画布等比缩放。",
+    "label 官方枚举 object/character/text；label=text 必须带 text 字段。",
+    "角色 LoRA 的触发词必须自己写进 caption，挂权重不会补触发词。",
+    "同机同时只跑一个任务（后端 GPU_LOCK），并发提交会排队而不是并行。",
+    "产物是磁盘 PNG + 同名 .json 快照；不要对返回的图重新编码或二次压缩。",
+    "scheduler / lora_style / step_cache_ratio / two_stage 等参数传了也不会生效，见 capabilities().unsupported。"
+  ],
+  "capabilities_extra": {
+    "version": "client/app/mflux/mlx/quantize/uncond_skip_layers 六元组，复现要对得上",
+    "unsupported": "传了也不生效的参数清单（scheduler / lora_style / step_cache_ratio / two_stage / steps>218 / cfg=1 时的 negative / turbo+char_lora）",
+    "presets_eta_s": "各档实测或折算耗时（秒）"
+  }
+}
