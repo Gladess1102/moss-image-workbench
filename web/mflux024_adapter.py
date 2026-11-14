@@ -541,17 +541,41 @@ def _cos(x, y) -> float:
     return float(mx.sum(x * y) / (na * nb + 1e-9))
 
 
+def _rel_drift(x, y) -> float:
+    """相对漂移：mean|x-y| / mean|y|。
+
+    跳步判据要的是"轨迹在多大程度上还在动"，余弦相似度对**幅度**不敏感
+    （方向不变、幅度翻倍时 cos 仍接近 1），所以 MG-Cache 用的是输出漂移。
+    这里归一化到当前 pred 的均值幅度，使阈值与分辨率、步数无关。
+    """
+    diff = float(mx.mean(mx.abs(x - y)))
+    base = float(mx.mean(mx.abs(y)))
+    return diff / (base + 1e-8)
+
+
 def sample(transformer, pos, neg, *, seed: int, height: int, width: int,
            steps: int = 4, guidance: float = 1.0, shift: float = 5.0,
            uncond_skip_layers=(22,), skip: float = 0.0, skip_mode: str = "adaptive",
            skip_cos: float = 0.972, skip_warmup: int = 3, skip_tail: int = 3,
+           skip_drift: float = 0.03,
            extrapolate: bool = False, on_step=None, progress: bool = False):
     """Euler 采样，支持 CFG / 层跳过 / 自适应跳步（对应 fork 的 mlx_runner 主干）。
 
     skip_mode="adaptive"：按相邻预测的余弦相似度决定是否跳步——
       中段轨迹平缓时跳过、陡峭时自动恢复，尾部自动收手。
       实测 25 步跳 7 步 PSNR 33.5 dB（固定比例同样跳 7 步只有 26.0 dB）。
+    skip_mode="drift"：漂移预算（MG-Cache / arXiv 2611.11365 的 timestep cache）。
+      累计"自上次真实计算以来的输出漂移"，只要加上下一次的预估漂移仍在
+      skip_drift 内就继续跳。与 adaptive 的区别：adaptive 是"逐点"判据，
+      单步漂移小就跳，但连续多步的小漂移叠加起来仍会累积误差；drift 是
+      "预算"判据，跳得越多下一次越难再跳，天然防止漂移累积。
+      skip 在此模式下表示**最大跳步比例**（对可跳区间），例如 0.5 = 最多跳一半。
+    skip_mode="hybrid"：余弦判据 AND 漂移预算——单步够平 (skip_cos) 且累计
+      漂移没超支 (skip_drift) 才跳。实测 25 步档：adaptive 跳 10 步 PSNR 36.3 dB，
+      纯 drift 跳 11 步只剩 34.3 dB（连续跳成簇会累积误差且更快退化），
+      所以把逐点判据和预算 AND 起来。
     skip_mode="fixed"：按 skip 比例固定跳（不推荐，陡峭区会跳糊）。
+    skip_mode="official"：用 mflux 自带的 StepCache（按 sigma 选点）。
     """
     from mflux.models.common.config.config import Config
     from mflux.models.common.config.model_config import ModelConfig
@@ -575,6 +599,10 @@ def sample(transformer, pos, neg, *, seed: int, height: int, width: int,
     skipped, pred_prev, last_cos, just_skipped = [], None, None, False
     cos_log = []          # 每步 pred 与上一步的余弦，用于和旧 fork 的曲线对比
     hist = []             # 最近几个"真实计算"的 pred，供跳步时做外推
+    acc_drift = 0.0       # drift 模式：自上次真实计算以来的累计漂移
+    last_drift = None     # drift 模式：最近一次真实相邻步的相对漂移
+    drift_log = []        # 每步跳不跳时的（累计漂移, 预估漂移），供标定曲线
+    drift_cap = max(1, round(skip * max(1, hi - lo))) if skip_mode in ("drift", "hybrid") else 0
 
     # skip_mode="official"：直接用 mflux 0.24 自带的 StepCache（TeaCache 风格）。
     # 它按 **schedule 的 sigma 相邻差** 选跳步点（信号变化最小的那 ratio 比例），
@@ -596,11 +624,25 @@ def sample(transformer, pos, neg, *, seed: int, height: int, width: int,
         if step_cache is not None:
             reused = step_cache.reuse(i)
             do_skip = reused is not None
-        elif skip > 0 and lo <= i < hi and not just_skipped and pred_prev is not None:
-            if skip_mode == "adaptive":
-                do_skip = last_cos is not None and last_cos >= skip_cos
-            else:
-                do_skip = (i % max(1, round(1.0 / skip))) == 0
+        elif skip > 0 and lo <= i < hi and pred_prev is not None:
+            if skip_mode == "drift":
+                # 预估下一步漂移：用最近一次真实漂移打 9 折（sigma 递减，漂移通常变小）
+                est = (last_drift or 0.0) * 0.9
+                do_skip = (last_drift is not None and not just_skipped
+                           and acc_drift + est <= skip_drift
+                           and len(skipped) < drift_cap)
+            elif skip_mode == "hybrid":
+                # 逐点判据（余弦）+ 累计预算双重约束：单步够平，且累计漂移没超支
+                est = (last_drift or 0.0) * 0.9
+                do_skip = (last_cos is not None and last_cos >= skip_cos
+                           and not just_skipped
+                           and (last_drift is None or acc_drift + est <= skip_drift)
+                           and len(skipped) < (drift_cap or 10 ** 9))
+            elif not just_skipped:
+                if skip_mode == "adaptive":
+                    do_skip = last_cos is not None and last_cos >= skip_cos
+                else:
+                    do_skip = (i % max(1, round(1.0 / skip))) == 0
 
         if do_skip:
             # 关键：跳过的步**仍要推进 latents**，只是复用上一次的预测方向。
@@ -615,6 +657,9 @@ def sample(transformer, pos, neg, *, seed: int, height: int, width: int,
                 pred = pred_prev
             skipped.append(i)
             just_skipped = True
+            if skip_mode == "drift" and last_drift is not None:
+                acc_drift += last_drift   # 跳过这一步按最近的漂移速度记账
+            drift_log.append((round(acc_drift, 4), round(last_drift or 0.0, 4)))
         else:
             t = timesteps[i]
             cond = transformer(latents, float(t), pos).astype(mx.float32)
@@ -625,7 +670,11 @@ def sample(transformer, pos, neg, *, seed: int, height: int, width: int,
                 pred = cond
             if pred_prev is not None:
                 last_cos = _cos(pred, pred_prev)
+                if skip_mode == "drift":
+                    last_drift = _rel_drift(pred, pred_prev)
+            acc_drift = 0.0
             cos_log.append(last_cos)
+            drift_log.append((0.0, round(last_drift or 0.0, 4)))
             pred_prev = pred
             just_skipped = False
             hist.append(pred)
@@ -639,15 +688,37 @@ def sample(transformer, pos, neg, *, seed: int, height: int, width: int,
         if on_step:
             on_step(i, n, do_skip)
 
-    return latents, {"skipped": skipped, "total": n, "last_cos": last_cos, "cos_log": cos_log}
+    return latents, {"skipped": skipped, "total": n, "last_cos": last_cos,
+                     "cos_log": cos_log, "drift_log": drift_log}
 
 
-def decode(vae, latents):
-    """latents -> uint8 图像数组 (H, W, 3)。"""
+def decode(vae, latents, cache_limit=1 << 30):
+    """latents -> uint8 图像数组 (H, W, 3)。
+
+    cache_limit（字节，默认 1 GB）：解码期间把 MLX buffer 池收紧到该值，结束后
+    还原。默认不再是无限制——批量跑图的脚本会连续解码几十次，裸调用不设限时
+    池子会一路涨到系统压缩内存（2026-11-14 实测：连着跑 6 个 25 步配置没限，
+    16 GB 机器被压出 10 GB swap）。
+    VAE 解码会在几秒内制造大量尺寸各异的中转 buffer，池子会顺着已释放的
+    空间继续扩张（mlx-vlm #2615 实测：MOSS-Image 1024²/50 步，解码几秒内
+    进程 12.1 GB → 38.7 GB，48 GB 的机器都被顶出 5 GB+ swap）。收紧池子
+    只影响峰值，像素逐比特一致。
+    """
     from mflux.models.common.config.model_config import ModelConfig
-    decoded = vae.decode_packed_latents(latents.astype(ModelConfig.precision))
-    mx.eval(decoded)
-    arr = np.array(decoded)
+
+    prev_limit = None
+    if cache_limit is not None:
+        prev_limit = mx.set_cache_limit(int(cache_limit))
+    try:
+        decoded = vae.decode_packed_latents(latents.astype(ModelConfig.precision))
+        mx.eval(decoded)
+        arr = np.array(decoded)
+    finally:
+        if prev_limit is not None:
+            try:
+                mx.set_cache_limit(prev_limit)
+            finally:
+                mx.clear_cache()
     if arr.ndim == 4:
         arr = arr[0]                      # (1, C, H, W) -> (C, H, W)
     if arr.ndim == 3 and arr.shape[0] in (1, 3, 4) and arr.shape[-1] not in (1, 3, 4):
@@ -660,12 +731,12 @@ def decode(vae, latents):
 # ---------------------------------------------------------------- 组合入口
 
 def generate(transformer, vae, pos, neg, *, seed, height, width, steps=4, guidance=1.0,
-             shift=5.0, uncond_skip_layers=(22,), **skip_kw):
+             shift=5.0, uncond_skip_layers=(22,), decode_cache_limit=None, **skip_kw):
     """采样 + 解码，返回 (uint8 图像, 采样统计)。"""
     latents, stats = sample(transformer, pos, neg, seed=seed, height=height, width=width,
                             steps=steps, guidance=guidance, shift=shift,
                             uncond_skip_layers=uncond_skip_layers, **skip_kw)
-    return decode(vae, latents), stats
+    return decode(vae, latents, cache_limit=decode_cache_limit), stats
 
 
 def run(model_dir, prompt, *, negative=None, seed=42, height=512, width=512, steps=4,

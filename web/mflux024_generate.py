@@ -74,14 +74,20 @@ def main():
     ap.add_argument("--time-embedding", default="")
     ap.add_argument("--skip", type=float, default=0.0, help="跳步比例，0=关")
     ap.add_argument("--skip-mode", default="adaptive",
-                    choices=["adaptive", "fixed", "uniform", "official"])
+                    choices=["adaptive", "fixed", "uniform", "official", "drift", "hybrid"])
     ap.add_argument("--cache-limit-gb", type=float, default=1.0,
                     help="MLX buffer 池上限（GB）；0=不限。16G 机器必须限，否则释放的 Metal buffer 不还")
     ap.add_argument("--skip-cos", type=float, default=0.972)
+    ap.add_argument("--skip-drift", type=float, default=0.03,
+                    help="drift 模式的漂移预算（相对单位，0.01~0.15）")
     ap.add_argument("--skip-warmup", type=int, default=3)
     ap.add_argument("--skip-extrap", action="store_true",
                     help="跳步时用最近两个真实 pred 做半额线性外推（替代直接复制）")
     ap.add_argument("--skip-tail", type=int, default=3)
+    ap.add_argument("--decode-cache-gb", type=float, default=0.25,
+                    help="VAE 解码期间 MLX buffer 池上限（GB）；只影响峰值，像素不变")
+    ap.add_argument("--keep-dit", action="store_true",
+                    help="解码前不释放 DiT（调试用；默认释放，16G 机器必须释放）")
     a = ap.parse_args()
 
     # 工作台传长 prompt 走文件，避开 argv 长度与引号坑
@@ -173,12 +179,28 @@ def main():
               flush=True)
         last[0] = now
 
-    img, stats = A.generate(
-        dit, vae, pos, neg, seed=a.seed, height=a.height, width=a.width,
+    latents, stats = A.sample(
+        dit, pos, neg, seed=a.seed, height=a.height, width=a.width,
         steps=n_steps, guidance=a.guidance, shift=a.shift,
         uncond_skip_layers=skip_layers, skip=a.skip, skip_mode=a.skip_mode,
         skip_cos=a.skip_cos, skip_warmup=a.skip_warmup, skip_tail=a.skip_tail,
-        extrapolate=a.skip_extrap, on_step=on_step)
+        skip_drift=a.skip_drift, extrapolate=a.skip_extrap, on_step=on_step)
+
+    # 解码前释放 DiT：解码阶段它已经没用了，但它占着的驻留权重会让 VAE 的
+    # fp32 中转 buffer 没有回收空间（mlx-vlm #2615 的第二个必要条件）。
+    # stream 模式下常驻只有 ~0.5 GB，收益小，但行为一致。
+    if not a.keep_dit:
+        del dit
+        mx.clear_cache()
+        print("解码前已释放 DiT", flush=True)
+
+    if hasattr(mx, "reset_peak_memory"):
+        mx.reset_peak_memory()
+    t_dec = time.time()
+    img = A.decode(vae, latents, cache_limit=int(a.decode_cache_gb * 1024 ** 3))
+    if hasattr(mx, "get_peak_memory"):
+        print("解码 %.1fs · 解码阶段 MLX 峰值 %.2f GB"
+              % (time.time() - t_dec, mx.get_peak_memory() / 1024 ** 3), flush=True)
 
     if a.out:
         from PIL import Image

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.2 — 2026-11-14
+
+**VAE 解码期收紧内存；跳步判据实验（drift / hybrid）。**
+
+### Fixed
+
+- `decode()` 增加 `cache_limit`（默认 1 GB）：解码期收紧 MLX buffer 池，`finally` 还原。默认不再无限制——批量解码会把空闲池顶到系统压缩内存（实测 16 GB 机器被压出 10 GB swap）。
+- mlx8 采样结束后先释放 DiT 再解码（`--keep-dit` 可关）：整模配置 1184×896/4 步 peak footprint 15.30 → 10.02 GB，流式 9.93 → 8.28 GB，**输出逐比特一致**。
+- `msmlx_runner.py` 的 `--skip-mode uniform` 此前从未生效（只实现了 adaptive 分支），补上固定比例逻辑。
+
+### Added
+
+- `--decode-cache-gb`：解码期缓存上限（默认 0.25 GB），只影响峰值不影响像素。
+- `--skip-mode drift|hybrid` + `--skip-drift`：按累计输出漂移预算跳步（MG-Cache / arXiv 2611.11365 思路）。25 步档实测与 adaptive 选点完全相同（10/25、1.59×、PSNR 36.33 dB），**仅作 CLI 实验入口**，不接入档位。
+
+### Notes
+
+- `--stream` 与非 stream 出图不一致（LoRA 应用路径不同：流式在加载时注入、整模在加载后 apply），此差异早于本版本；流式内部改前改后逐比特一致。
+
 ## 0.1.1 — 2026-11-05
 
 **审计修复 18 条 + 从开发版回灌两项体验修复，另补 `DELETE` 的跨站校验。**

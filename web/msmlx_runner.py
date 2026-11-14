@@ -35,6 +35,10 @@ def _install_skip(a, mx):
         nb = mx.sqrt(mx.sum(y * y))
         return float(mx.sum(x * y) / (na * nb + 1e-9))
 
+    def _rel_drift(x, y):
+        """相对漂移 mean|x-y|/mean|y|（与 mflux024_adapter._rel_drift 同口径）。"""
+        return float(mx.mean(mx.abs(x - y))) / (float(mx.mean(mx.abs(y))) + 1e-8)
+
     def _sample(model, req, positive, negative, latents, on_step):
         req.validate(len(model.layers))
         if req.turbo:
@@ -50,19 +54,32 @@ def _install_skip(a, mx):
         lo = max(1, a.skip_warmup)
         hi = n - max(1, a.skip_tail)
         skipped, pred_prev, last_cos, just_skipped = [], None, None, False
+        acc_drift, last_drift = 0.0, None
+        drift_cap = max(1, round(a.skip * max(1, hi - lo))) if a.skip_mode == "drift" else 0
         for i, t in enumerate(timesteps):
             skip_active = req.slg_start <= i / n < req.slg_stop
             guidance = req.step_guidance[i] if req.step_guidance else req.guidance
             do_cfg = guidance != 1.0 and negative is not None
             if req.step_lora:
                 P.set_strength(model, req.step_lora[i], "default")
-            adaptive_ok = (a.skip_mode == "adaptive" and lo <= i < hi
-                           and not just_skipped and last_cos is not None
+            can_skip = pred_prev is not None and lo <= i < hi
+            if a.skip_mode == "drift":
+                est = (last_drift if last_drift is not None else 0.0) * 0.9
+                do_skip = (can_skip and last_drift is not None and not just_skipped
+                           and acc_drift + est <= a.skip_drift
+                           and len(skipped) < drift_cap)
+            elif a.skip_mode == "adaptive":
+                do_skip = (can_skip and not just_skipped and last_cos is not None
                            and last_cos >= a.skip_cos)
-            if adaptive_ok and pred_prev is not None:
+            else:  # uniform：固定比例（之前漏实现，只有 adaptive 生效）
+                do_skip = can_skip and not just_skipped and \
+                    (i % max(1, round(1.0 / a.skip))) == 0
+            if do_skip:
                 prediction = pred_prev
                 skipped.append(i)
                 just_skipped = True
+                if a.skip_mode == "drift" and last_drift is not None:
+                    acc_drift += last_drift
             else:
                 cond = model(latents, float(t), positive).astype(mx.float32)
                 prediction = cond
@@ -77,6 +94,8 @@ def _install_skip(a, mx):
                     prediction = prediction + req.slg_scale * (cond - sk)
                 if pred_prev is not None:
                     last_cos = _cos(prediction, pred_prev)
+                    last_drift = _rel_drift(prediction, pred_prev)
+                acc_drift = 0.0
                 pred_prev = prediction
                 just_skipped = False
             dt = mx.array(sigmas[i + 1] - sigmas[i], dtype=mx.float32)
@@ -109,8 +128,10 @@ def main():
     # 跳步：monkeypatch moss_image_mlx.pipeline._sample，把「复用上一步 prediction」
     # 插进它的 Euler 循环。turbo 走 turbo.sample，固定 15 次前向，不参与跳步。
     ap.add_argument("--skip", type=float, default=0.0)
-    ap.add_argument("--skip-mode", choices=["uniform", "adaptive"], default="uniform")
+    ap.add_argument("--skip-mode", choices=["uniform", "adaptive", "drift"], default="uniform")
     ap.add_argument("--skip-cos", type=float, default=0.972)
+    ap.add_argument("--skip-drift", type=float, default=0.03,
+                    help="drift 模式的漂移预算（相对单位）；skip 表示最大跳步比例")
     ap.add_argument("--skip-warmup", type=int, default=3)
     ap.add_argument("--skip-tail", type=int, default=3)
     ap.add_argument("--cache-limit-gb", type=float, default=2.0)
