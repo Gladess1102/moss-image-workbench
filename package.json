@@ -1,0 +1,37 @@
+{
+  "name": "moss-image-workbench",
+  "version": "0.1.4",
+  "description": "MOSS-Image local workbench for Apple Silicon: one-command setup and launcher (mflux + MLX)",
+  "bin": {
+    "moss-wb": "bin/moss-wb.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "keywords": [
+    "moss-image",
+    "mlx",
+    "mflux",
+    "text-to-image",
+    "apple-silicon",
+    "stable-diffusion"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gladess1102/moss-image-workbench.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Gladess1102/moss-image-workbench/issues"
+  },
+  "homepage": "https://github.com/Gladess1102/moss-image-workbench#readme"
+}

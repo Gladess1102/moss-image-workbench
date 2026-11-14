@@ -82,6 +82,20 @@ MOSS-Image 是 5B DiT + 9B 文本编码器的双语生图模型。官方管线�
   —— WKWebView 承载同一页面，关窗即清理推理进程。
 - 只支持 macOS + Apple Silicon，这是 MLX/Metal 的硬约束。
 
+### npm 一键（可选，需要 Node 18+）
+
+不想手动 clone 的话：
+
+    npx moss-image-workbench setup    # 克隆到 ~/moss-image-workbench 并安装（含约 8 GB 模型）
+    npx moss-image-workbench start    # http://127.0.0.1:7860
+    npx moss-image-workbench doctor   # 环境自检：平台 / Python / venv / 模型 / 端口
+
+npm 包只是个启动器（约 12 KB），代码和权重仍然落在本地目录：
+
+- `setup --dir <路径>` 换安装位置；`--with-msmlx` 一并装第二引擎；`--no-models` 跳过模型下载
+- `start --port 7861` 换端口（等价于 `MOSS_PORT=7861`）
+- 已经手动 clone 过的目录，直接 `npx moss-image-workbench start` 也能用
+
 ## 档位一览
 
 | 档 | 前向 | 512² | 说明 |

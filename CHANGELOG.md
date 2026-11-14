@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.4 — 2026-11-14
+
+**npm 一键部署。**
+
+### Added
+
+- `package.json` + `bin/moss-wb.js`：`npx moss-image-workbench setup | start | doctor | models`。
+  包体只有 ~13 KB 启动器：代码、venv 与 8 GB 权重仍落在本地目录（默认 `~/moss-image-workbench`）——
+  npx 的缓存目录会被清理，不能把权重放那儿。
+- `doctor` 逐项检查 macOS / arm64 / Python 3.11+ / `.venv-mflux` / 模型 / 端口占用。
+- `setup --dir <路径>`、`--with-msmlx`、`--no-models`；`start --port <端口>`（等价 `MOSS_PORT`）。
+
+### Notes
+
+- npm 不接管 Python 依赖：`setup` 仍然调用仓库里的 `install.sh`（含 `scripts/download_models.py`）。
+- 仅 macOS + Apple Silicon，与安装脚本一致。
+
 ## 0.1.3 — 2026-11-14
 
 **文本编码 embeds 内容寻址缓存：同 prompt 重跑不再重新编码。**
