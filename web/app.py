@@ -792,13 +792,18 @@ def build_mlx(p, outfile):
         # runner 侧：--lora 逗号分隔；--lora-scale 单值广播或等长列表
         base += ["--lora", ",".join(loras), "--lora-scale", ",".join(scales)]
     if p.get("two_stage"):
-        emb = os.path.join(_jobdir(p), "embeds.safetensors")
+        emb, hit = _embeds_cache(p)
+        run = base + ["--stage", "run", "--embeds", emb]
+        if hit:
+            return [(run, env, "去噪（embeds 命中）")]
+        os.makedirs(EMBEDS_CACHE, exist_ok=True)
+        _embeds_gc()
         enc = [MFLUX024_PY, RUNNER, "--model", MLX8, "--stage", "encode",
                "--prompt-file", _write_prompt_file(p),
                "--negative", p.get("negative") or "",
                "--guidance", str(p["cfg"]), "--embeds", emb,
                "--cache-limit-gb", "1"]
-        run = base + ["--stage", "run", "--embeds", emb]
+        p["_embeds_cache"] = emb
         return [(enc, env, "编码"), (run, env, "去噪")]
     return [(base + ["--stage", "all", "--prompt-file", _write_prompt_file(p)], env, "编码+去噪")]
 
@@ -843,6 +848,80 @@ def _write_prompt_file(p):
     with open(path, "w", encoding="utf-8") as f:
         f.write(p["prompt"])
     return path
+
+
+# ---------------------------------------------------------------- embeds 内容寻址缓存
+# 文本编码每次要 ~17 s + 5 GB 峰值，但 embeds 只取决于
+#   prompt / 是否编码 negative / TE 权重版本
+# —— seed、尺寸、步数、档位都不参与。所以「draft 512 验构图 → standard 1184×896 出片」
+# 这种最常见的升级流程，第二步可以整段跳过编码。
+EMBEDS_CACHE = os.path.join(os.path.expanduser("~"), ".moss-image", "embeds-cache")
+EMBEDS_KEEP = 96
+
+
+def _te_signature():
+    """TE 权重指纹：换权重或重新下载必须让缓存失效。"""
+    f = os.path.join(MLX8, "text_encoder", "model-00001-of-00002.safetensors")
+    try:
+        st = os.stat(os.path.realpath(f))
+        return "%d-%d" % (st.st_size, int(st.st_mtime))
+    except OSError:
+        return "unknown"
+
+
+def _embeds_ok(path):
+    """safetensors 头校验：被 kill -9 打断的编码会留下半截文件，不能当成命中。"""
+    try:
+        with open(path, "rb") as f:
+            n = int.from_bytes(f.read(8), "little")
+            if not 0 < n < 50_000_000:
+                return False
+            json.loads(f.read(n))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _embeds_cache(p):
+    """返回 (缓存路径, 是否命中)。
+
+    negative 只有 CFG != 1.0 或显式给出时才参与编码，判定与 CLI 的
+    neg_arg = negative if (negative or guidance != 1.0) else None 保持一致。
+    """
+    neg = p.get("negative") or ""
+    try:
+        cfg = float(p.get("cfg"))
+    except (TypeError, ValueError):
+        cfg = 0.0
+    if not neg and cfg == 1.0:
+        neg = ""
+    key = hashlib.sha256(("%s\x00%s\x00%s" % (p["prompt"], neg, _te_signature()))
+                         .encode("utf-8")).hexdigest()[:32]
+    path = os.path.join(EMBEDS_CACHE, key + ".safetensors")
+    if os.path.exists(path) and _embeds_ok(path):
+        try:
+            os.utime(path)            # 刷新 LRU 时间戳
+        except OSError:
+            pass
+        return path, True
+    return path, False
+
+
+def _embeds_gc(keep=EMBEDS_KEEP):
+    """按条数做 LRU：单条 embeds 通常 100 KB–2 MB，96 条约几十 MB。"""
+    try:
+        files = [os.path.join(EMBEDS_CACHE, f) for f in os.listdir(EMBEDS_CACHE)
+                 if f.endswith(".safetensors")]
+    except OSError:
+        return
+    if len(files) <= keep:
+        return
+    files.sort(key=lambda f: os.path.getmtime(f))
+    for f in files[:len(files) - keep]:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
 
 
 def _stream(cmd, env, job_id, log, quiet=False):
@@ -987,6 +1066,12 @@ def run_job(job_id, p):
                 _patch(job_id, phase=label)
                 rc = _stream(cmd, env, job_id, log)
                 if rc != 0:
+                    if p.get("_embeds_cache"):
+                        # 编码/去噪失败时把可能写坏的缓存条目删掉，避免下次误命中
+                        try:
+                            os.remove(p["_embeds_cache"])
+                        except OSError:
+                            pass
                     if JOBS[job_id].get("cancelled"):
                         return          # 用户手动取消，error 文案已经在 _post_cancel 里写好
                     _patch(job_id, status="error", phase="error",
